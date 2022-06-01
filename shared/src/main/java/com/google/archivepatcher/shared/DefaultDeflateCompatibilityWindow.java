@@ -14,7 +14,6 @@
 
 package com.google.archivepatcher.shared;
 
-import com.google.security.annotations.SuppressInsecureCipherModeCheckerNoReview;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -314,7 +313,6 @@ public class DefaultDeflateCompatibilityWindow {
    *
    * @return the mapping as described
    */
-  @SuppressInsecureCipherModeCheckerNoReview
   public Map<JreDeflateParameters, String> getSystemValues() {
     Map<JreDeflateParameters, String> result = new HashMap<JreDeflateParameters, String>();
     MessageDigest digester;
