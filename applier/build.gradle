@@ -10,8 +10,8 @@ dependencies {
 task copyTestResources(type: Copy) {
     // AS/IntelliJ workaround: https://code.google.com/p/android/issues/detail?id=64887#c26
     if (System.properties['idea.platform.prefix'] != null) {
-        from sourceSets.test.resources
-        into sourceSets.test.output.classesDir
+        from "${projectDir}/src/test/resources"
+        into "${buildDir}/classes/test"
     }
 }
 

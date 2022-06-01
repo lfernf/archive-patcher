@@ -1,5 +1,7 @@
+.DS_Store
 bin
 .settings
 build
 .gradle
 local-build-repo
+.idea
