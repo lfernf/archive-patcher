@@ -12,31 +12,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package com.google.archivepatcher.generator;
+package com.google.archivepatcher.shared;
 
 import static com.google.common.truth.Truth.assertThat;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.attribute.PosixFilePermissions;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
-/**
-* Tests for {@link TempFileHolder}.
-*/
+/** Test for {@link SafeTempFiles}. */
 @RunWith(JUnit4.class)
-@SuppressWarnings("javadoc")
-public class TempFileHolderTest {
+public class SafeTempFilesTest {
+
   @Test
-  public void testConstructAndClose() throws IOException {
-    // Tests that a temp file can be created and that it is deleted upon close().
-    File allocated = null;
-    try(TempFileHolder holder = new TempFileHolder()) {
-      assertThat(holder.file).isNotNull();
-      assertThat(holder.file.exists()).isTrue();
-      allocated = holder.file;
-    }
-    assertThat(allocated.exists()).isFalse();
+  public void testTempFilePermission() throws IOException {
+    File file = SafeTempFiles.createTempFile("prefix", "suffix");
+    assertThat(PosixFilePermissions.toString(Files.getPosixFilePermissions(file.toPath())))
+        .isEqualTo("rw-------");
   }
 }

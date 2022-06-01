@@ -14,6 +14,8 @@
 
 package com.google.archivepatcher.generator;
 
+import static com.google.archivepatcher.shared.PatchConstants.CompressionMethod.DEFLATE;
+import static com.google.archivepatcher.shared.PatchConstants.CompressionMethod.STORED;
 import static com.google.common.truth.Truth.assertThat;
 
 import com.google.archivepatcher.shared.UnitTestZipArchive;
@@ -30,10 +32,10 @@ import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
+import static org.junit.Assume.assumeTrue;
+import com.google.archivepatcher.shared.DefaultDeflateCompatibilityWindow;
 
-/**
- * Tests for {@link MinimalZipParser}.
- */
+/** Tests for {@link MinimalZipParser}. */
 @RunWith(JUnit4.class)
 @SuppressWarnings("javadoc")
 public class MinimalZipParserTest {
@@ -41,6 +43,9 @@ public class MinimalZipParserTest {
 
   @Before
   public void setup() throws Exception {
+    // TODO: fix compatibility in OpenJDK 1.8 (or higher)
+    assumeTrue(new DefaultDeflateCompatibilityWindow().isCompatible());
+
     unitTestZipArchive = UnitTestZipArchive.makeTestZip();
   }
 
@@ -138,7 +143,7 @@ public class MinimalZipParserTest {
             + centralDirectoryMetadata.getLengthOfCentralDirectory();
     checkExpectedBytes(new byte[] {0x50, 0x4b, 0x05, 0x06}, (int) calculatedEndOfCentralDirectory);
     assertThat(centralDirectoryMetadata.getNumEntriesInCentralDirectory())
-        .isEqualTo(UnitTestZipArchive.allEntriesInFileOrder.size());
+        .isEqualTo(UnitTestZipArchive.ALL_ENTRIES.size());
   }
 
   @Test
@@ -153,30 +158,34 @@ public class MinimalZipParserTest {
         .isEqualTo(metadata.getOffsetOfCentralDirectory());
 
     // Read each entry and verify all fields *except* the value returned by
-    // MinimalZipEntry.getFileOffsetOfCompressedData(), as that has yet to be computed.
-    for (UnitTestZipEntry expectedEntry : UnitTestZipArchive.allEntriesInFileOrder) {
-      MinimalZipEntry parsed = MinimalZipParser.parseCentralDirectoryEntry(in);
+    // fileOffsetOfCompressedData() and getLengthOfLocalEntry, as those have yet to be computed.
+    for (UnitTestZipEntry expectedEntry : UnitTestZipArchive.ALL_ENTRIES) {
+      MinimalZipEntry parsed =
+          MinimalZipParser.parseCentralDirectoryEntry(in)
+              .fileOffsetOfCompressedData(0)
+              .lengthOfLocalEntry(0)
+              .build();
       assertThat(parsed.getFileName()).isEqualTo(expectedEntry.path);
 
       // Verify that the local signature header is at the calculated position
       byte[] expectedSignatureBlock = new byte[] {0x50, 0x4b, 0x03, 0x04};
       for (int index = 0; index < 4; index++) {
-        byte actualByte = unitTestZipArchive[((int) parsed.getFileOffsetOfLocalEntry()) + index];
+        byte actualByte = unitTestZipArchive[((int) parsed.localEntryRange().offset()) + index];
         assertThat(actualByte).isEqualTo(expectedSignatureBlock[index]);
       }
 
       if (expectedEntry.level > 0) {
-        assertThat(parsed.getCompressionMethod()).isEqualTo(8 /* deflate */);
+        assertThat(parsed.compressionMethod()).isEqualTo(DEFLATE);
       } else {
-        assertThat(parsed.getCompressionMethod()).isEqualTo(0 /* store */);
+        assertThat(parsed.compressionMethod()).isEqualTo(STORED);
       }
       byte[] uncompressedContent = expectedEntry.getUncompressedBinaryContent();
-      assertThat(parsed.getUncompressedSize()).isEqualTo(uncompressedContent.length);
+      assertThat(parsed.uncompressedSize()).isEqualTo(uncompressedContent.length);
       CRC32 crc32 = new CRC32();
       crc32.update(uncompressedContent);
-      assertThat(parsed.getCrc32OfUncompressedData()).isEqualTo(crc32.getValue());
+      assertThat(parsed.crc32OfUncompressedData()).isEqualTo(crc32.getValue());
       byte[] compressedContent = expectedEntry.getCompressedBinaryContent();
-      assertThat(parsed.getCompressedSize()).isEqualTo(compressedContent.length);
+      assertThat(parsed.compressedDataRange().length()).isEqualTo(compressedContent.length);
     }
   }
 
@@ -192,23 +201,23 @@ public class MinimalZipParserTest {
         .isEqualTo(metadata.getOffsetOfCentralDirectory());
 
     // Read each entry and verify all fields *except* the value returned by
-    // MinimalZipEntry.getFileOffsetOfCompressedData(), as that has yet to be computed.
-    List<MinimalZipEntry> parsedEntries = new ArrayList<MinimalZipEntry>();
-    for (int x = 0; x < UnitTestZipArchive.allEntriesInFileOrder.size(); x++) {
-      parsedEntries.add(MinimalZipParser.parseCentralDirectoryEntry(in));
+    // MinimalZipEntry.fileOffsetOfCompressedData(), as that has yet to be computed.
+    List<MinimalZipEntry.Builder> parsedEntryBuilders = new ArrayList<>();
+    for (int x = 0; x < UnitTestZipArchive.ALL_ENTRIES.size(); x++) {
+      parsedEntryBuilders.add(MinimalZipParser.parseCentralDirectoryEntry(in));
     }
 
-    for (int x = 0; x < UnitTestZipArchive.allEntriesInFileOrder.size(); x++) {
-      UnitTestZipEntry expectedEntry = UnitTestZipArchive.allEntriesInFileOrder.get(x);
-      MinimalZipEntry parsedEntry = parsedEntries.get(x);
+    for (int x = 0; x < UnitTestZipArchive.ALL_ENTRIES.size(); x++) {
+      UnitTestZipEntry expectedEntry = UnitTestZipArchive.ALL_ENTRIES.get(x);
+      MinimalZipEntry.Builder parsedEntryBuilder = parsedEntryBuilders.get(x);
       in.reset();
-      assertThat(in.skip(parsedEntry.getFileOffsetOfLocalEntry()))
-          .isEqualTo(parsedEntry.getFileOffsetOfLocalEntry());
+      assertThat(in.skip(parsedEntryBuilder.fileOffsetOfLocalEntry()))
+          .isEqualTo(parsedEntryBuilder.fileOffsetOfLocalEntry());
       long relativeDataOffset = MinimalZipParser.parseLocalEntryAndGetCompressedDataOffset(in);
       assertThat(relativeDataOffset > 0).isTrue();
       checkExpectedBytes(
           expectedEntry.getCompressedBinaryContent(),
-          (int) (parsedEntry.getFileOffsetOfLocalEntry() + relativeDataOffset));
+          (int) (parsedEntryBuilder.fileOffsetOfLocalEntry() + relativeDataOffset));
     }
   }
 }

@@ -16,6 +16,8 @@ package com.google.archivepatcher.applier;
 
 import com.google.archivepatcher.shared.JreDeflateParameters;
 import com.google.archivepatcher.shared.PatchConstants;
+import com.google.archivepatcher.shared.PatchConstants.DeltaFormat;
+import com.google.archivepatcher.shared.Range;
 import com.google.archivepatcher.shared.TypedRange;
 import java.io.DataInputStream;
 import java.io.IOException;
@@ -30,6 +32,8 @@ import java.util.List;
  */
 public class PatchReader {
 
+  private PatchReader() {}
+
   /**
    * Reads patch data from the specified {@link InputStream} up to but not including the first byte
    * of delta bytes, and returns a {@link PatchApplyPlan} that describes all the operations that
@@ -40,7 +44,7 @@ public class PatchReader {
    * @return the plan for applying the patch
    * @throws IOException if anything goes wrong
    */
-  public PatchApplyPlan readPatchApplyPlan(InputStream in) throws IOException {
+  public static PatchApplyPlan readPatchApplyPlan(InputStream in) throws IOException {
     // Use DataOutputStream for ease of writing. This is deliberately left open, as closing it would
     // close the output stream that was passed in and that is not part of the method's documented
     // behavior.
@@ -61,8 +65,7 @@ public class PatchReader {
     // Read old file uncompression instructions.
     int numOldFileUncompressionInstructions = (int) checkNonNegative(
         dataIn.readInt(), "old file uncompression instruction count");
-    List<TypedRange<Void>> oldFileUncompressionPlan =
-        new ArrayList<TypedRange<Void>>(numOldFileUncompressionInstructions);
+    List<Range> oldFileUncompressionPlan = new ArrayList<>(numOldFileUncompressionInstructions);
     long lastReadOffset = -1;
     for (int x = 0; x < numOldFileUncompressionInstructions; x++) {
       long offset = checkNonNegative(dataIn.readLong(), "old file uncompression range offset");
@@ -70,7 +73,7 @@ public class PatchReader {
       if (offset < lastReadOffset) {
         throw new PatchFormatException("old file uncompression ranges out of order or overlapping");
       }
-      TypedRange<Void> range = new TypedRange<Void>(offset, length, null);
+      Range range = Range.of(offset, length);
       oldFileUncompressionPlan.add(range);
       lastReadOffset = offset + length; // To check that the next range starts after the current one
     }
@@ -81,8 +84,7 @@ public class PatchReader {
         numDeltaFriendlyNewFileRecompressionInstructions,
         "delta-friendly new file recompression instruction count");
     List<TypedRange<JreDeflateParameters>> deltaFriendlyNewFileRecompressionPlan =
-        new ArrayList<TypedRange<JreDeflateParameters>>(
-            numDeltaFriendlyNewFileRecompressionInstructions);
+        new ArrayList<>(numDeltaFriendlyNewFileRecompressionInstructions);
     lastReadOffset = -1;
     for (int x = 0; x < numDeltaFriendlyNewFileRecompressionInstructions; x++) {
       long offset = checkNonNegative(
@@ -106,61 +108,60 @@ public class PatchReader {
       int strategy = (int) checkRange(dataIn.readUnsignedByte(), 0, 2, "recompression strategy");
       int nowrapInt = (int) checkRange(dataIn.readUnsignedByte(), 0, 1, "recompression nowrap");
       TypedRange<JreDeflateParameters> range =
-          new TypedRange<JreDeflateParameters>(
-              offset,
-              length,
-              JreDeflateParameters.of(level, strategy, nowrapInt == 0 ? false : true));
+          TypedRange.of(offset, length, JreDeflateParameters.of(level, strategy, nowrapInt != 0));
       deltaFriendlyNewFileRecompressionPlan.add(range);
     }
 
     // Read the delta metadata, but stop before the first byte of the actual delta.
     // V1 has exactly one delta and it must be bsdiff.
-    int numDeltaRecords = (int) checkRange(dataIn.readInt(), 1, 1, "num delta records");
-
-    List<DeltaDescriptor> deltaDescriptors = new ArrayList<DeltaDescriptor>(numDeltaRecords);
-    for (int x = 0; x < numDeltaRecords; x++) {
-      byte deltaFormatByte = (byte)
-      checkRange(
-          dataIn.readByte(),
-          PatchConstants.DeltaFormat.BSDIFF.patchValue,
-          PatchConstants.DeltaFormat.BSDIFF.patchValue,
-          "delta format");
-      long deltaFriendlyOldFileWorkRangeOffset = checkNonNegative(
-          dataIn.readLong(), "delta-friendly old file work range offset");
-      long deltaFriendlyOldFileWorkRangeLength = checkNonNegative(
-          dataIn.readLong(), "delta-friendly old file work range length");
-      long deltaFriendlyNewFileWorkRangeOffset = checkNonNegative(
-          dataIn.readLong(), "delta-friendly new file work range offset");
-      long deltaFriendlyNewFileWorkRangeLength = checkNonNegative(
-          dataIn.readLong(), "delta-friendly new file work range length");
-      long deltaLength = checkNonNegative(dataIn.readLong(), "delta length");
-      DeltaDescriptor descriptor =
-          new DeltaDescriptor(
-              PatchConstants.DeltaFormat.fromPatchValue(deltaFormatByte),
-              new TypedRange<Void>(
-                  deltaFriendlyOldFileWorkRangeOffset, deltaFriendlyOldFileWorkRangeLength, null),
-              new TypedRange<Void>(
-                  deltaFriendlyNewFileWorkRangeOffset, deltaFriendlyNewFileWorkRangeLength, null),
-              deltaLength);
-      deltaDescriptors.add(descriptor);
-    }
+    int numDeltaRecords = (int) checkNonNegative(dataIn.readInt(), "num delta records");
 
     return new PatchApplyPlan(
         Collections.unmodifiableList(oldFileUncompressionPlan),
         deltaFriendlyOldFileSize,
         Collections.unmodifiableList(deltaFriendlyNewFileRecompressionPlan),
-        Collections.unmodifiableList(deltaDescriptors));
+        numDeltaRecords);
+  }
+
+  public static DeltaDescriptor readDeltaDescriptor(InputStream in) throws IOException {
+    // Use DataOutputStream for ease of writing. This is deliberately left open, as closing it would
+    // close the output stream that was passed in and that is not part of the method's documented
+    // behavior.
+    @SuppressWarnings("resource")
+    DataInputStream dataIn = new DataInputStream(in);
+
+    byte deltaFormatByte =
+        (byte)
+            checkRange(
+                dataIn.readByte(),
+                DeltaFormat.BSDIFF.patchValue,
+                DeltaFormat.FILE_BY_FILE.patchValue,
+                "delta format");
+    long deltaFriendlyOldFileWorkRangeOffset =
+        checkNonNegative(dataIn.readLong(), "delta-friendly old file work range offset");
+    long deltaFriendlyOldFileWorkRangeLength =
+        checkNonNegative(dataIn.readLong(), "delta-friendly old file work range length");
+    long deltaFriendlyNewFileWorkRangeOffset =
+        checkNonNegative(dataIn.readLong(), "delta-friendly new file work range offset");
+    long deltaFriendlyNewFileWorkRangeLength =
+        checkNonNegative(dataIn.readLong(), "delta-friendly new file work range length");
+    long deltaLength = checkNonNegative(dataIn.readLong(), "delta length");
+    return DeltaDescriptor.create(
+        DeltaFormat.fromPatchValue(deltaFormatByte),
+        Range.of(deltaFriendlyOldFileWorkRangeOffset, deltaFriendlyOldFileWorkRangeLength),
+        Range.of(deltaFriendlyNewFileWorkRangeOffset, deltaFriendlyNewFileWorkRangeLength),
+        deltaLength);
   }
 
   /**
    * Assert that the value isn't negative.
+   *
    * @param value the value to check
    * @param description the description to use in error messages if the value is not ok
    * @return the value
    * @throws PatchFormatException if the value is not ok
    */
-  private static final long checkNonNegative(long value, String description)
-      throws PatchFormatException {
+  private static long checkNonNegative(long value, String description) throws PatchFormatException {
     if (value < 0) {
       throw new PatchFormatException("Bad value for " + description + ": " + value);
     }
@@ -169,6 +170,7 @@ public class PatchReader {
 
   /**
    * Assert that the value is in the specified range.
+   *
    * @param value the value to check
    * @param min the minimum (inclusive) value to allow
    * @param max the maximum (inclusive) value to allow
@@ -176,7 +178,7 @@ public class PatchReader {
    * @return the value
    * @throws PatchFormatException if the value is not ok
    */
-  private static final long checkRange(long value, long min, long max, String description)
+  private static long checkRange(long value, long min, long max, String description)
       throws PatchFormatException {
     if (value < min || value > max) {
       throw new PatchFormatException(

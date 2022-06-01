@@ -14,138 +14,133 @@
 
 package com.google.archivepatcher.generator;
 
+import com.google.archivepatcher.shared.PatchConstants.CompressionMethod;
+import com.google.archivepatcher.shared.Range;
+import com.google.auto.value.AutoValue;
 import java.io.UnsupportedEncodingException;
-import java.util.Arrays;
 
-/**
- * A class that contains <em>just enough data</em> to generate a patch.
- */
-public class MinimalZipEntry {
-  /**
-   * The compression method that was used, typically 8 (for deflate) or 0 (for stored).
-   */
-  private final int compressionMethod;
+/** A class that contains <em>just enough data</em> to generate a patch. */
+@AutoValue
+public abstract class MinimalZipEntry {
+  /** The compression method that was used, typically 8 (for deflate) or 0 (for stored). */
+  public abstract CompressionMethod compressionMethod();
 
-  /**
-   * The CRC32 of the <em>uncompressed</em> data.
-   */
-  private final long crc32OfUncompressedData;
+  /** The CRC32 of the <em>uncompressed</em> data. */
+  public abstract long crc32OfUncompressedData();
+
+  /** The range of the data as it exists in the archive. */
+  public abstract Range compressedDataRange();
 
   /**
-   * The size of the data as it exists in the archive. For compressed entries, this is the size of
-   * the compressed data; for uncompressed entries, this is the same as {@link #uncompressedSize}.
+   * The size of the <em>uncompressed</em> data. It will be the same as the length of {@link
+   * #compressedDataRange()} if the data is uncompressed.
    */
-  private final long compressedSize;
-
-  /**
-   * The size of the <em>uncompressed</em data.
-   */
-  private final long uncompressedSize;
+  public abstract long uncompressedSize();
 
   /**
    * The file name for the entry. By convention, names ending with '/' denote directories. The
    * encoding is controlled by the general purpose flags, bit 11. See {@link #getFileName()} for
    * more information.
+   *
+   * <p>DO NOT MODIFY the array returned.
    */
-  private final byte[] fileNameBytes;
+  @SuppressWarnings("mutable")
+  public abstract byte[] fileNameBytes();
 
   /**
-   * The value of the 11th bit of the general purpose flag, which controls the encoding of file
-   * names and comments. See {@link #getFileName()} for more information.
+   * If we should use UTF8 encoding for interpreting the bytes of the filename.
+   *
+   * <p>This is obtained from the 11th bit of the general purpose flag, which controls the encoding
+   * of file names and comments. See {@link #getFileName()} for more information.
    */
-  private final boolean generalPurposeFlagBit11;
+  public abstract boolean useUtf8Encoding();
 
-  /**
-   * The file offset at which the first byte of the local entry header begins.
-   */
-  private final long fileOffsetOfLocalEntry;
+  /** The range in the original archive corresponding to the local entry header. */
+  public abstract Range localEntryRange();
 
-  /**
-   * The file offset at which the first byte of the data for the entry begins. For compressed data,
-   * this is the first byte of the deflated data; for uncompressed data, this is the first byte of
-   * the uncompressed data.
-   */
-  private long fileOffsetOfCompressedData = -1;
-
-  /**
-   * Create a new Central Directory entry with the corresponding data.
-   * @param compressionMethod the method used to compress the data
-   * @param crc32OfUncompressedData the CRC32 of the uncompressed data
-   * @param compressedSize the size of the data in its compressed form
-   * @param uncompressedSize the size of the data in its uncompressed form
-   * @param fileNameBytes the name of the file, as a byte array; see {@link #getFileName()} for
-   * information on encoding
-   * @param generalPurposeFlagBit11 the value of the 11th bit of the general purpose flag, which
-   * nominally controls the default character encoding for file names and comments; see
-   * {@link #getFileName()} for more information on encoding
-   * @param fileOffsetOfLocalEntry the file offset at which the local entry begins
-   */
-  public MinimalZipEntry(
-      int compressionMethod,
-      long crc32OfUncompressedData,
-      long compressedSize,
-      long uncompressedSize,
-      byte[] fileNameBytes,
-      boolean generalPurposeFlagBit11,
-      long fileOffsetOfLocalEntry) {
-    this.compressionMethod = compressionMethod;
-    this.crc32OfUncompressedData = crc32OfUncompressedData;
-    this.compressedSize = compressedSize;
-    this.uncompressedSize = uncompressedSize;
-    this.fileNameBytes = fileNameBytes == null ? null : fileNameBytes.clone();
-    this.generalPurposeFlagBit11 = generalPurposeFlagBit11;
-    this.fileOffsetOfLocalEntry = fileOffsetOfLocalEntry;
+  public static Builder builder() {
+    return new AutoValue_MinimalZipEntry.Builder();
   }
 
-  /**
-   * Sets the file offset at which the data for this entry begins.
-   * @param offset the offset
-   */
-  public void setFileOffsetOfCompressedData(long offset) {
-    fileOffsetOfCompressedData = offset;
-  }
+  @AutoValue.Builder
+  public abstract static class Builder {
+    private long fileOffsetOfCompressedData = -1;
+    private long compressedSize = -1;
+    private long fileOffsetOfLocalEntry = -1;
+    private long lengthOfLocalEntry = -1;
 
-  /**
-   * Returns the compression method that was used, typically 8 (for deflate) or 0 (for stored).
-   * @return as described
-   */
-  public int getCompressionMethod() {
-    return compressionMethod;
-  }
+    /** @see #compressionMethod() */
+    abstract Builder compressionMethod(CompressionMethod compressionMethod);
 
-  /**
-   * Returns the CRC32 of the uncompressed data.
-   * @return as described
-   */
-  public long getCrc32OfUncompressedData() {
-    return crc32OfUncompressedData;
-  }
+    /** @see #crc32OfUncompressedData() */
+    abstract Builder crc32OfUncompressedData(long crc32OfUncompressedData);
 
-  /**
-   * Returns the size of the data as it exists in the archive. For compressed entries, this is the
-   * size of the compressed data; for uncompressed entries, this is the same as
-   * {@link #getUncompressedSize()}.
-   * @return as described
-   */
-  public long getCompressedSize() {
-    return compressedSize;
-  }
+    /** @see #uncompressedSize() */
+    abstract Builder uncompressedSize(long uncompressedSize);
 
-  /**
-   * Returns the size of the uncompressed data.
-   * @return as described
-   */
-  public long getUncompressedSize() {
-    return uncompressedSize;
-  }
+    /** @see #fileNameBytes() */
+    abstract Builder fileNameBytes(byte[] fileNameBytes);
 
-  /**
-   * Returns a copy of the bytes of the file name, exactly the same as they were in the archive
-   * file. See {@link #getFileName()} for an explanation of why this is useful.
-   * @return as described
-   */
-  public byte[] getFileNameBytes() {
-    return fileNameBytes == null ? null : fileNameBytes.clone();
+    /** @see #useUtf8Encoding() */
+    abstract Builder useUtf8Encoding(boolean useUtf8Encoding);
+
+    /** @see #compressedDataRange() */
+    abstract Builder compressedDataRange(Range compressedDataRange);
+
+    /** Offset in original file where compressed data begins. */
+    public Builder fileOffsetOfCompressedData(long fileOffsetOfCompressedData) {
+      this.fileOffsetOfCompressedData = fileOffsetOfCompressedData;
+      return this;
+    }
+
+    /** Size of the compressed data. */
+    public Builder compressedSize(long compressedSize) {
+      this.compressedSize = compressedSize;
+      return this;
+    }
+
+    /** @see #localEntryRange() */
+    abstract Builder localEntryRange(Range localEntryRange);
+
+    /** Offset of local header entry in the original file. */
+    public Builder fileOffsetOfLocalEntry(long fileOffsetOfLocalEntry) {
+      this.fileOffsetOfLocalEntry = fileOffsetOfLocalEntry;
+      return this;
+    }
+
+    /**
+     * Getter for the {@link #fileOffsetOfLocalEntry()}. We need to access this to generate {@link
+     * #fileOffsetOfCompressedData} when parsing the entries.
+     */
+    public long fileOffsetOfLocalEntry() {
+      return fileOffsetOfLocalEntry;
+    }
+
+    /** Length of the local header entry. */
+    public Builder lengthOfLocalEntry(long lengthOfLocalEntry) {
+      this.lengthOfLocalEntry = lengthOfLocalEntry;
+      return this;
+    }
+
+    abstract MinimalZipEntry autoBuild();
+
+    public MinimalZipEntry build() {
+      checkNonNegative(fileOffsetOfLocalEntry, "fileOffsetOfLocalEntry");
+      checkNonNegative(lengthOfLocalEntry, "lengthOfLocalEntry");
+      checkNonNegative(fileOffsetOfCompressedData, "fileOffsetOfCompressedData");
+      checkNonNegative(compressedSize, "compressedSize");
+
+      localEntryRange(Range.of(fileOffsetOfLocalEntry, lengthOfLocalEntry));
+      compressedDataRange(Range.of(fileOffsetOfCompressedData, compressedSize));
+
+      return autoBuild();
+    }
+
+    private static void checkNonNegative(long value, String name) {
+      if (value < 0) {
+        throw new IllegalStateException(name + " must be set and non-negative");
+      }
+    }
   }
 
   /**
@@ -154,120 +149,24 @@ public class MinimalZipEntry {
    * purpose flag was set to 1, these bytes should be encoded with the UTF8 character set; otherwise
    * the character set should be Cp437. Adherence to this standard varies significantly, and some
    * systems use the default character set for the environment instead of Cp437 when writing these
-   * bytes. For such instances, callers can obtain the raw bytes by using
-   * {@link #getFileNameBytes()} instead and checking the value of the 11th bit of the general
-   * purpose bit flag for a hint using {@link #getGeneralPurposeFlagBit11()}. There is also
-   * something called EFS ("0x0008 extra field storage") that specifies additional behavior for
-   * character encoding, but this tool doesn't support it as the use is not standardized.
+   * bytes. For such instances, callers can obtain the raw bytes by using {@link #fileNameBytes()}
+   * instead and checking the value of the 11th bit of the general purpose bit flag for a hint using
+   * {@link #useUtf8Encoding()}. There is also something called EFS ("0x0008 extra field storage")
+   * that specifies additional behavior for character encoding, but this tool doesn't support it as
+   * the use is not standardized.
+   *
    * @return as described
    */
   // TODO: Support EFS
   public String getFileName() {
-    String charsetName = generalPurposeFlagBit11 ? "UTF8" : "Cp437";
+    String charsetName = useUtf8Encoding() ? "UTF8" : "Cp437";
     try {
-      return new String(fileNameBytes, charsetName);
+      return new String(fileNameBytes(), charsetName);
     } catch (UnsupportedEncodingException e) {
       // Cp437 has been supported at least since JDK 1.6.0, so this should rarely occur in practice.
       // Older versions of the JDK also support Cp437, but as part of charsets.jar, which didn't
       // ship in every distribution; it is conceivable that those systems might have problems here.
       throw new RuntimeException("System doesn't support " + charsetName, e);
     }
-  }
-
-  /**
-   * Returns the value of the 11th bit of the general purpose flag; true for 1, false for 0. See
-   * {@link #getFileName()} for more information on the usefulness of this flag.
-   * @return as described
-   */
-  public boolean getGeneralPurposeFlagBit11() {
-    return generalPurposeFlagBit11;
-  }
-
-  /**
-   * Returns the file offset at which the first byte of the local entry header begins.
-   * @return as described
-   */
-  public long getFileOffsetOfLocalEntry() {
-    return fileOffsetOfLocalEntry;
-  }
-
-  /**
-   * Returns the file offset at which the first byte of the data for the entry begins. For
-   * compressed data, this is the first byte of the deflated data; for uncompressed data, this is
-   * the first byte of the uncompressed data.
-   * @return as described
-   */
-  public long getFileOffsetOfCompressedData() {
-    return fileOffsetOfCompressedData;
-  }
-
-  /**
-   * Convenience methods that returns true if and only if the entry is compressed with deflate.
-   * @return as described
-   */
-  public boolean isDeflateCompressed() {
-    // 8 is deflate according to the zip spec.
-    if (getCompressionMethod() != 8) {
-      return false;
-    }
-    // Some tools may list compression method deflate but set level to zero (store), so they will
-    // have a compressed size equal to the uncompresesd size. Don't consider such things to be
-    // compressed, even if they are "deflated".
-    return getCompressedSize() != getUncompressedSize();
-  }
-
-  @Override
-  public int hashCode() {
-    final int prime = 31;
-    int result = 1;
-    result = prime * result + (int) (compressedSize ^ (compressedSize >>> 32));
-    result = prime * result + compressionMethod;
-    result = prime * result + (int) (crc32OfUncompressedData ^ (crc32OfUncompressedData >>> 32));
-    result = prime * result + Arrays.hashCode(fileNameBytes);
-    result =
-        prime * result + (int) (fileOffsetOfCompressedData ^ (fileOffsetOfCompressedData >>> 32));
-    result = prime * result + (int) (fileOffsetOfLocalEntry ^ (fileOffsetOfLocalEntry >>> 32));
-    result = prime * result + (generalPurposeFlagBit11 ? 1231 : 1237);
-    result = prime * result + (int) (uncompressedSize ^ (uncompressedSize >>> 32));
-    return result;
-  }
-
-  @Override
-  public boolean equals(Object obj) {
-    if (this == obj) {
-      return true;
-    }
-    if (obj == null) {
-      return false;
-    }
-    if (getClass() != obj.getClass()) {
-      return false;
-    }
-    MinimalZipEntry other = (MinimalZipEntry) obj;
-    if (compressedSize != other.compressedSize) {
-      return false;
-    }
-    if (compressionMethod != other.compressionMethod) {
-      return false;
-    }
-    if (crc32OfUncompressedData != other.crc32OfUncompressedData) {
-      return false;
-    }
-    if (!Arrays.equals(fileNameBytes, other.fileNameBytes)) {
-      return false;
-    }
-    if (fileOffsetOfCompressedData != other.fileOffsetOfCompressedData) {
-      return false;
-    }
-    if (fileOffsetOfLocalEntry != other.fileOffsetOfLocalEntry) {
-      return false;
-    }
-    if (generalPurposeFlagBit11 != other.generalPurposeFlagBit11) {
-      return false;
-    }
-    if (uncompressedSize != other.uncompressedSize) {
-      return false;
-    }
-    return true;
   }
 }

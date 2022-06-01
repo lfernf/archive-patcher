@@ -14,6 +14,7 @@
 
 package com.google.archivepatcher.explainer;
 
+import static com.google.archivepatcher.shared.bytesource.ByteStreams.copy;
 import static com.google.common.truth.Truth.assertThat;
 
 import com.google.archivepatcher.generator.ByteArrayHolder;
@@ -26,6 +27,7 @@ import com.google.archivepatcher.shared.Compressor;
 import com.google.archivepatcher.shared.UnitTestZipArchive;
 import com.google.archivepatcher.shared.UnitTestZipEntry;
 import com.google.archivepatcher.shared.bytesource.ByteSource;
+import com.google.common.collect.ImmutableList;
 import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.File;
@@ -34,7 +36,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.UnsupportedEncodingException;
-import java.util.Collections;
 import java.util.List;
 import org.junit.After;
 import org.junit.Before;
@@ -81,12 +82,8 @@ public class PatchExplainerTest {
     @Override
     public void compress(InputStream uncompressedIn, OutputStream compressedOut)
         throws IOException {
-      byte[] readBuffer = new byte[32768];
-      int numRead = 0;
       ByteArrayOutputStream actualInput = new ByteArrayOutputStream();
-      while ((numRead = uncompressedIn.read(readBuffer)) >= 0) {
-        actualInput.write(readBuffer, 0, numRead);
-      }
+      copy(uncompressedIn, actualInput);
       assertThat(actualInput.toByteArray()).isEqualTo(expectedInput);
       compressedOut.write(OUTPUT.getBytes("US-ASCII"));
     }
@@ -161,7 +158,7 @@ public class PatchExplainerTest {
 
   @Test
   public void testExplainPatch_CompressedBytesIdentical() throws Exception {
-    byte[] bytes = UnitTestZipArchive.makeTestZip(Collections.singletonList(ENTRY_A1_LEVEL_6));
+    byte[] bytes = UnitTestZipArchive.makeTestZip(ImmutableList.of(ENTRY_A1_LEVEL_6));
     save(bytes, oldFile);
     save(bytes, newFile);
     PatchExplainer explainer = new PatchExplainer(null, null);
@@ -177,8 +174,8 @@ public class PatchExplainerTest {
 
   @Test
   public void testExplainPatch_CompressedBytesChanged_UncompressedUnchanged() throws Exception {
-    byte[] oldBytes = UnitTestZipArchive.makeTestZip(Collections.singletonList(ENTRY_A1_LEVEL_6));
-    byte[] newBytes = UnitTestZipArchive.makeTestZip(Collections.singletonList(ENTRY_A1_LEVEL_9));
+    byte[] oldBytes = UnitTestZipArchive.makeTestZip(ImmutableList.of(ENTRY_A1_LEVEL_6));
+    byte[] newBytes = UnitTestZipArchive.makeTestZip(ImmutableList.of(ENTRY_A1_LEVEL_9));
     save(oldBytes, oldFile);
     save(newBytes, newFile);
     PatchExplainer explainer = new PatchExplainer(null, null);
@@ -196,8 +193,8 @@ public class PatchExplainerTest {
 
   @Test
   public void testExplainPatch_CompressedBytesChanged_UncompressedChanged() throws Exception {
-    byte[] oldBytes = UnitTestZipArchive.makeTestZip(Collections.singletonList(ENTRY_A1_LEVEL_6));
-    byte[] newBytes = UnitTestZipArchive.makeTestZip(Collections.singletonList(ENTRY_A2_LEVEL_9));
+    byte[] oldBytes = UnitTestZipArchive.makeTestZip(ImmutableList.of(ENTRY_A1_LEVEL_6));
+    byte[] newBytes = UnitTestZipArchive.makeTestZip(ImmutableList.of(ENTRY_A2_LEVEL_9));
     save(oldBytes, oldFile);
     save(newBytes, newFile);
     FakeDeltaGenerator fakeDeltaGenerator =
@@ -223,8 +220,8 @@ public class PatchExplainerTest {
       throws Exception {
     // Just like above, but this time with a TotalRecompressionLimit that changes the result.
     TotalRecompressionLimiter limiter = new TotalRecompressionLimiter(1); // 1 byte limit!
-    byte[] oldBytes = UnitTestZipArchive.makeTestZip(Collections.singletonList(ENTRY_A1_LEVEL_6));
-    byte[] newBytes = UnitTestZipArchive.makeTestZip(Collections.singletonList(ENTRY_A2_LEVEL_9));
+    byte[] oldBytes = UnitTestZipArchive.makeTestZip(ImmutableList.of(ENTRY_A1_LEVEL_6));
+    byte[] newBytes = UnitTestZipArchive.makeTestZip(ImmutableList.of(ENTRY_A2_LEVEL_9));
     save(oldBytes, oldFile);
     save(newBytes, newFile);
     // Note that we will expect a diff based on the COMPRESSED bytes, not the UNCOMPRESSED bytes,
@@ -249,8 +246,8 @@ public class PatchExplainerTest {
 
   @Test
   public void testExplainPatch_BothEntriesUncompressed_BytesUnchanged() throws Exception {
-    byte[] oldBytes = UnitTestZipArchive.makeTestZip(Collections.singletonList(ENTRY_A1_STORED));
-    byte[] newBytes = UnitTestZipArchive.makeTestZip(Collections.singletonList(ENTRY_A1_STORED));
+    byte[] oldBytes = UnitTestZipArchive.makeTestZip(ImmutableList.of(ENTRY_A1_STORED));
+    byte[] newBytes = UnitTestZipArchive.makeTestZip(ImmutableList.of(ENTRY_A1_STORED));
     save(oldBytes, oldFile);
     save(newBytes, newFile);
     PatchExplainer explainer = new PatchExplainer(null, null);
@@ -268,8 +265,8 @@ public class PatchExplainerTest {
 
   @Test
   public void testExplainPatch_BothEntriesUncompressed_BytesChanged() throws Exception {
-    byte[] oldBytes = UnitTestZipArchive.makeTestZip(Collections.singletonList(ENTRY_A1_STORED));
-    byte[] newBytes = UnitTestZipArchive.makeTestZip(Collections.singletonList(ENTRY_A2_STORED));
+    byte[] oldBytes = UnitTestZipArchive.makeTestZip(ImmutableList.of(ENTRY_A1_STORED));
+    byte[] newBytes = UnitTestZipArchive.makeTestZip(ImmutableList.of(ENTRY_A2_STORED));
     save(oldBytes, oldFile);
     save(newBytes, newFile);
     FakeDeltaGenerator fakeDeltaGenerator =
@@ -291,8 +288,8 @@ public class PatchExplainerTest {
 
   @Test
   public void testExplainPatch_CompressedChangedToUncompressed() throws Exception {
-    byte[] oldBytes = UnitTestZipArchive.makeTestZip(Collections.singletonList(ENTRY_A1_LEVEL_9));
-    byte[] newBytes = UnitTestZipArchive.makeTestZip(Collections.singletonList(ENTRY_A1_STORED));
+    byte[] oldBytes = UnitTestZipArchive.makeTestZip(ImmutableList.of(ENTRY_A1_LEVEL_9));
+    byte[] newBytes = UnitTestZipArchive.makeTestZip(ImmutableList.of(ENTRY_A1_STORED));
     save(oldBytes, oldFile);
     save(newBytes, newFile);
     FakeDeltaGenerator fakeDeltaGenerator =
@@ -313,8 +310,8 @@ public class PatchExplainerTest {
 
   @Test
   public void testExplainPatch_UncompressedChangedToCompressed() throws Exception {
-    byte[] oldBytes = UnitTestZipArchive.makeTestZip(Collections.singletonList(ENTRY_A1_STORED));
-    byte[] newBytes = UnitTestZipArchive.makeTestZip(Collections.singletonList(ENTRY_A1_LEVEL_6));
+    byte[] oldBytes = UnitTestZipArchive.makeTestZip(ImmutableList.of(ENTRY_A1_STORED));
+    byte[] newBytes = UnitTestZipArchive.makeTestZip(ImmutableList.of(ENTRY_A1_LEVEL_6));
     save(oldBytes, oldFile);
     save(newBytes, newFile);
     FakeDeltaGenerator fakeDeltaGenerator =
@@ -335,22 +332,22 @@ public class PatchExplainerTest {
 
   @Test
   public void testExplainPatch_Unsuitable() throws Exception {
-    byte[] oldBytes = UnitTestZipArchive.makeTestZip(Collections.singletonList(ENTRY_A1_STORED));
-    byte[] newBytes = UnitTestZipArchive.makeTestZip(Collections.singletonList(ENTRY_A1_LEVEL_6));
+    byte[] oldBytes = UnitTestZipArchive.makeTestZip(ImmutableList.of(ENTRY_A1_STORED));
+    byte[] newBytes = UnitTestZipArchive.makeTestZip(ImmutableList.of(ENTRY_A1_LEVEL_6));
     save(oldBytes, oldFile);
     save(newBytes, newFile);
 
     // Corrupt the data in newFile and re-save. This will make the entry un-divinable.
     MinimalZipEntry newEntry = MinimalZipArchive.listEntries(newFile).get(0);
-    newBytes[(int) newEntry.getFileOffsetOfCompressedData()] = (byte) 0xff;
+    newBytes[(int) newEntry.compressedDataRange().offset()] = (byte) 0xff;
     save(newBytes, newFile);
-    byte[] justNewData = new byte[(int) newEntry.getCompressedSize()];
+    byte[] justNewData = new byte[(int) newEntry.compressedDataRange().length()];
     System.arraycopy(
         newBytes,
-        (int) newEntry.getFileOffsetOfCompressedData(),
+        (int) newEntry.compressedDataRange().offset(),
         justNewData,
         0,
-        (int) newEntry.getCompressedSize());
+        (int) newEntry.compressedDataRange().length());
 
     FakeDeltaGenerator fakeDeltaGenerator =
         new FakeDeltaGenerator(ENTRY_A1_STORED.getUncompressedBinaryContent(), justNewData);
@@ -368,8 +365,8 @@ public class PatchExplainerTest {
 
   @Test
   public void testExplainPatch_NewFile() throws Exception {
-    byte[] oldBytes = UnitTestZipArchive.makeTestZip(Collections.singletonList(ENTRY_A1_LEVEL_6));
-    byte[] newBytes = UnitTestZipArchive.makeTestZip(Collections.singletonList(ENTRY_B_LEVEL_6));
+    byte[] oldBytes = UnitTestZipArchive.makeTestZip(ImmutableList.of(ENTRY_A1_LEVEL_6));
+    byte[] newBytes = UnitTestZipArchive.makeTestZip(ImmutableList.of(ENTRY_B_LEVEL_6));
     save(oldBytes, oldFile);
     save(newBytes, newFile);
     FakeCompressor fakeCompressor =

@@ -16,6 +16,7 @@ package com.google.archivepatcher.shared.bytesource;
 
 import com.google.archivepatcher.shared.Closeables;
 import com.google.archivepatcher.shared.RandomAccessFileInputStream;
+import java.io.BufferedInputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
@@ -28,37 +29,37 @@ import java.util.Queue;
  * A {@link ByteSource} backed by a {@link RandomAccessFileInputStream}. This implementation is
  * created mainly for backwards compatibility.
  */
-public class RandomAccessFileByteSource extends ByteSource {
+public class RandomAccessFileByteSource extends FileByteSource {
 
-  private final File file;
-  private final long length;
-  private final Queue<RandomAccessFileInputStream> unusedInputStreams = new ArrayDeque<>();
+  private final Queue<ShadowInputStream<RandomAccessFileInputStream>> unusedInputStreams =
+      new ArrayDeque<>();
   private final List<RandomAccessFileInputStream> allInputStreams = new ArrayList<>();
 
   public RandomAccessFileByteSource(File file) throws IOException {
-    this.file = file;
-    this.length = file.length();
+    super(file);
   }
 
   @Override
-  public long length() {
-    return length;
+  public InputStream openBufferedStream() throws IOException {
+    return new BufferedInputStream(openStream(0, length()));
   }
 
   @Override
   protected InputStream openStream(long offset, long length) throws IOException {
-    RandomAccessFileInputStream rafis = getUnusedStream();
-    rafis.setRange(offset, length);
-    return new ShadowInputStream(rafis, () -> unusedInputStreams.add(rafis));
+    ShadowInputStream<RandomAccessFileInputStream> shadowInputStream = getUnusedStream();
+    shadowInputStream.getStream().setRange(offset, length);
+    shadowInputStream.open(() -> unusedInputStreams.add(shadowInputStream));
+    return shadowInputStream;
   }
 
-  private RandomAccessFileInputStream getUnusedStream() throws IOException {
-    RandomAccessFileInputStream rafis = unusedInputStreams.poll();
-    if (rafis == null) {
-      rafis = new RandomAccessFileInputStream(file);
+  private ShadowInputStream<RandomAccessFileInputStream> getUnusedStream() throws IOException {
+    ShadowInputStream<RandomAccessFileInputStream> shadowInputStream = unusedInputStreams.poll();
+    if (shadowInputStream == null) {
+      RandomAccessFileInputStream rafis = new RandomAccessFileInputStream(getFile());
       allInputStreams.add(rafis);
+      shadowInputStream = new ShadowInputStream<>(rafis);
     }
-    return rafis;
+    return shadowInputStream;
   }
 
   @Override

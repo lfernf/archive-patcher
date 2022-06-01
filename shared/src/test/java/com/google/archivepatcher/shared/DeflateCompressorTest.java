@@ -14,6 +14,7 @@
 
 package com.google.archivepatcher.shared;
 
+import static com.google.archivepatcher.shared.bytesource.ByteStreams.copy;
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.truth.Truth.assertWithMessage;
 
@@ -66,12 +67,8 @@ public class DeflateCompressorTest {
     Inflater inflater = new Inflater(nowrap);
     InflaterInputStream inflaterIn =
         new InflaterInputStream(new ByteArrayInputStream(compressedData), inflater);
-    byte[] buffer = new byte[32768];
     ByteArrayOutputStream uncompressedOut = new ByteArrayOutputStream();
-    int numRead = 0;
-    while ((numRead = inflaterIn.read(buffer)) >= 0) {
-      uncompressedOut.write(buffer, 0, numRead);
-    }
+    copy(inflaterIn, uncompressedOut);
     return uncompressedOut.toByteArray();
   }
 
@@ -187,17 +184,6 @@ public class DeflateCompressorTest {
   }
 
   @Test
-  public void testSetInputBufferSize() throws IOException {
-    assertThat(compressor.getInputBufferSize()).isNotEqualTo(17); // Ensure test is valid
-    compressor.setInputBufferSize(17); // Arbitrary non-default value
-    assertThat(compressor.getInputBufferSize()).isEqualTo(17);
-    compressor.compress(rawContentIn, compressedContentOut);
-    byte[] uncompressed =
-        uncompressWithJavaInflater(compressor.isNowrap(), compressedContentOut.toByteArray());
-    assertThat(uncompressed).isEqualTo(CONTENT);
-  }
-
-  @Test
   public void testSetOutputBufferSize() throws IOException {
     assertThat(compressor.getOutputBufferSize()).isNotEqualTo(17); // Ensure test is valid
     compressor.setOutputBufferSize(17); // Arbitrary non-default value
@@ -213,7 +199,7 @@ public class DeflateCompressorTest {
     compressor.setCaching(false);
     Deflater deflater1 = compressor.createOrResetDeflater();
     Deflater deflater2 = compressor.createOrResetDeflater();
-    assertThat(deflater1).isNotSameAs(deflater2);
+    assertThat(deflater1).isNotSameInstanceAs(deflater2);
   }
 
   @Test
@@ -221,7 +207,7 @@ public class DeflateCompressorTest {
     compressor.setCaching(true);
     Deflater deflater1 = compressor.createOrResetDeflater();
     Deflater deflater2 = compressor.createOrResetDeflater();
-    assertThat(deflater1).isSameAs(deflater2);
+    assertThat(deflater1).isSameInstanceAs(deflater2);
   }
 
   @Test
@@ -230,7 +216,7 @@ public class DeflateCompressorTest {
     Deflater deflater1 = compressor.createOrResetDeflater();
     compressor.release();
     Deflater deflater2 = compressor.createOrResetDeflater();
-    assertThat(deflater1).isNotSameAs(deflater2);
+    assertThat(deflater1).isNotSameInstanceAs(deflater2);
   }
 
   @Test

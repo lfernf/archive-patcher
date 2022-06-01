@@ -72,13 +72,13 @@ public class DeltaFriendlyOldBlobSizeLimiter implements PreDiffPlanEntryModifier
     List<PreDiffPlanEntry> result = new ArrayList<>(sorted.size());
     long bytesRemaining = maxSizeBytes - oldFile.length();
     for (PreDiffPlanEntry originalEntry : sorted) {
-      if (!originalEntry.getZipEntryUncompressionOption().uncompressOldEntry) {
+      if (!originalEntry.zipEntryUncompressionOption().uncompressOldEntry) {
         // Keep the original entry, no need to track size since it won't be uncompressed.
         result.add(originalEntry);
       } else {
         long extraBytesConsumed =
-            originalEntry.getOldEntry().getUncompressedSize()
-                - originalEntry.getOldEntry().getCompressedSize();
+            originalEntry.oldEntry().uncompressedSize()
+                - originalEntry.oldEntry().compressedDataRange().length();
         if (bytesRemaining - extraBytesConsumed >= 0) {
           // Keep the original entry, but also subtract from the remaining space.
           result.add(originalEntry);
@@ -87,8 +87,8 @@ public class DeltaFriendlyOldBlobSizeLimiter implements PreDiffPlanEntryModifier
           // Update the entry to prevent uncompressing this tuple.
           result.add(
               originalEntry.toBuilder()
-                  .setUncompressionOption(
-                      ZipEntryUncompressionOption.UNCOMPRESS_NEITHER,
+                  .zipEntryUncompressionOption(ZipEntryUncompressionOption.UNCOMPRESS_NEITHER)
+                  .uncompressionOptionExplanation(
                       UncompressionOptionExplanation.RESOURCE_CONSTRAINED)
                   .build());
         }
@@ -111,8 +111,7 @@ public class DeltaFriendlyOldBlobSizeLimiter implements PreDiffPlanEntryModifier
   private static class UncompressedOldEntrySizeComparator implements Comparator<PreDiffPlanEntry> {
     @Override
     public int compare(PreDiffPlanEntry e1, PreDiffPlanEntry e2) {
-      return Long.compare(
-          e1.getOldEntry().getUncompressedSize(), e2.getOldEntry().getUncompressedSize());
+      return Long.compare(e1.oldEntry().uncompressedSize(), e2.oldEntry().uncompressedSize());
     }
   }
 }

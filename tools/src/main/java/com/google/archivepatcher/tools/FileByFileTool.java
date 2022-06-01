@@ -20,6 +20,7 @@ import com.google.archivepatcher.generator.FileByFileDeltaGenerator;
 import com.google.archivepatcher.generator.PreDiffPlanEntryModifier;
 import com.google.archivepatcher.generator.TotalRecompressionLimiter;
 import com.google.archivepatcher.shared.PatchConstants.DeltaFormat;
+import com.google.archivepatcher.shared.SafeTempFiles;
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.File;
@@ -28,9 +29,10 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Simple command-line tool for generating and applying patches.
@@ -44,6 +46,7 @@ public class FileByFileTool extends AbstractTool {
           + "Options:\n"
           + "  --generate      generate a patch\n"
           + "  --apply         apply a patch\n"
+          + "  --v2            use FBF v2\n"
           + "  --old           the old file\n"
           + "  --new           the new file\n"
           + "  --patch         the patch file\n"
@@ -119,6 +122,8 @@ public class FileByFileTool extends AbstractTool {
     Long totalRecompressionLimit = null;
     Long deltaFriendlyOldBlobSizeLimit = null;
     Mode mode = null;
+    Set<DeltaFormat> deltaFormats = new HashSet<>();
+    deltaFormats.add(DeltaFormat.BSDIFF);
     Iterator<String> argIterator = new ArrayList<>(Arrays.asList(args)).iterator();
     while (argIterator.hasNext()) {
       String arg = argIterator.next();
@@ -132,6 +137,8 @@ public class FileByFileTool extends AbstractTool {
         mode = Mode.GENERATE;
       } else if ("--apply".equals(arg)) {
         mode = Mode.APPLY;
+      } else if ("--v2".equals(arg)) {
+        deltaFormats.add(DeltaFormat.FILE_BY_FILE);
       } else if ("--trl".equals(arg)) {
         totalRecompressionLimit = Long.parseLong(popOrDie(argIterator, "--trl"));
         if (totalRecompressionLimit < 0) {
@@ -163,7 +170,8 @@ public class FileByFileTool extends AbstractTool {
           newFile,
           new File(patchPath),
           totalRecompressionLimit,
-          deltaFriendlyOldBlobSizeLimit);
+          deltaFriendlyOldBlobSizeLimit,
+          deltaFormats);
     } else { // mode == Mode.APPLY
       File patchFile = getRequiredFileOrDie(patchPath, "patch file");
       applyPatch(oldFile, patchFile, new File(newPath));
@@ -180,6 +188,7 @@ public class FileByFileTool extends AbstractTool {
    *     allow in the resulting patch
    * @param deltaFriendlyOldBlobSizeLimit optional limit for the size of the delta-friendly old
    *     blob, which implies a limit on the temporary space needed to apply the generated patch
+   * @param deltaFormats
    * @throws IOException if anything goes wrong
    * @throws InterruptedException if any thread has interrupted the current thread
    */
@@ -188,7 +197,8 @@ public class FileByFileTool extends AbstractTool {
       File newFile,
       File patchFile,
       Long totalRecompressionLimit,
-      Long deltaFriendlyOldBlobSizeLimit)
+      Long deltaFriendlyOldBlobSizeLimit,
+      Set<DeltaFormat> deltaFormats)
       throws IOException, InterruptedException {
     List<PreDiffPlanEntryModifier> preDiffPlanEntryModifiers = new ArrayList<>();
     if (totalRecompressionLimit != null) {
@@ -199,8 +209,7 @@ public class FileByFileTool extends AbstractTool {
           new DeltaFriendlyOldBlobSizeLimiter(deltaFriendlyOldBlobSizeLimit));
     }
     FileByFileDeltaGenerator generator =
-        new FileByFileDeltaGenerator(
-            preDiffPlanEntryModifiers, Collections.singleton(DeltaFormat.BSDIFF));
+        new FileByFileDeltaGenerator(preDiffPlanEntryModifiers, deltaFormats);
     try (FileOutputStream patchOut = new FileOutputStream(patchFile);
         BufferedOutputStream bufferedPatchOut = new BufferedOutputStream(patchOut)) {
       generator.generateDelta(oldFile, newFile, bufferedPatchOut);
@@ -217,7 +226,7 @@ public class FileByFileTool extends AbstractTool {
    */
   public static void applyPatch(File oldFile, File patchFile, File newFile) throws IOException {
     // Figure out temp directory
-    File tempFile = File.createTempFile("fbftool", "tmp");
+    File tempFile = SafeTempFiles.createTempFile("fbftool", "tmp");
     File tempDir = tempFile.getParentFile();
     tempFile.delete();
     FileByFileDeltaApplier applier = new FileByFileDeltaApplier(tempDir);

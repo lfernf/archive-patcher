@@ -14,6 +14,7 @@
 
 package com.google.archivepatcher.generator;
 
+import com.google.archivepatcher.shared.PatchConstants.CompressionMethod;
 import com.google.archivepatcher.shared.bytesource.ByteSource;
 import java.io.IOException;
 import java.io.InputStream;
@@ -137,11 +138,14 @@ class MinimalZipParser {
 
   /**
    * Parse one central directory entry, starting at the current file position.
+   *
    * @param in the input stream to read from, assumed to start at the first byte of the entry
-   * @return the entry that was parsed
+   * @return the builder of the entry that was parsed since some data has to be populated after all
+   *     entries are collected.
    * @throws IOException if unable to complete the parsing
    */
-  public static MinimalZipEntry parseCentralDirectoryEntry(InputStream in) throws IOException {
+  public static MinimalZipEntry.Builder parseCentralDirectoryEntry(InputStream in)
+      throws IOException {
     // *** 4 bytes encode the CENTRAL_DIRECTORY_ENTRY_SIGNATURE, verify for sanity
     // 2 bytes encode the version-made-by, ignore
     // 2 bytes encode the version-needed-to-extract, ignore
@@ -167,7 +171,7 @@ class MinimalZipParser {
     }
     skipOrDie(in, 2 + 2); // Skip version stuff
     int generalPurposeFlags = read16BitUnsigned(in);
-    int compressionMethod = read16BitUnsigned(in);
+    CompressionMethod compressionMethod = CompressionMethod.fromValue(read16BitUnsigned(in));
     skipOrDie(in, 2 + 2); // Skip MSDOS junk
     long crc32OfUncompressedData = read32BitUnsigned(in);
     long compressedSize = read32BitUnsigned(in);
@@ -181,15 +185,23 @@ class MinimalZipParser {
     readOrDie(in, fileNameBuffer, 0, fileNameBuffer.length);
     skipOrDie(in, extrasLength + commentLength);
     // General purpose flag bit 11 is an important hint for the character set used for file names.
-    boolean generalPurposeFlagBit11 = (generalPurposeFlags & (0x1 << 10)) != 0;
-    return new MinimalZipEntry(
-        compressionMethod,
-        crc32OfUncompressedData,
-        compressedSize,
-        uncompressedSize,
-        fileNameBuffer,
-        generalPurposeFlagBit11,
-        fileOffsetOfLocalEntry);
+    boolean useUtf8Encoding = (generalPurposeFlags & (0x1 << 10)) != 0;
+
+    // Some tools may list compression method deflate but set level to zero (store), so they will
+    // have a compressed size equal to the uncompresesd size. Don't consider such things to be
+    // compressed, even if they are "deflated".
+    if (compressionMethod == CompressionMethod.DEFLATE && compressedSize == uncompressedSize) {
+      compressionMethod = CompressionMethod.STORED;
+    }
+
+    return MinimalZipEntry.builder()
+        .compressionMethod(compressionMethod)
+        .crc32OfUncompressedData(crc32OfUncompressedData)
+        .compressedSize(compressedSize)
+        .uncompressedSize(uncompressedSize)
+        .fileNameBytes(fileNameBuffer)
+        .useUtf8Encoding(useUtf8Encoding)
+        .fileOffsetOfLocalEntry(fileOffsetOfLocalEntry);
   }
 
   /**

@@ -14,6 +14,8 @@
 
 package com.google.archivepatcher.shared;
 
+import static com.google.archivepatcher.shared.bytesource.ByteStreams.copy;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -39,16 +41,8 @@ public class DeflateUncompressor implements Uncompressor {
    */
   private int inputBufferSize = 32768;
 
-  /**
-   * The size of the buffer used for writing data out during
-   * {@link #uncompress(InputStream, OutputStream)}.
-   */
-  private int outputBufferSize = 32768;
-
-  /**
-   * Cached {@link Inflater} to be used.
-   */
-  private Inflater inflater = null;
+  /** Cached {@link Inflater} to be used. */
+  private InflaterWrapper inflater = null;
 
   /**
    * Whether or not to cache {@link Inflater} instances, which is a major performance tradeoff.
@@ -86,24 +80,6 @@ public class DeflateUncompressor implements Uncompressor {
   }
 
   /**
-   * Returns the size of the buffer used for writing to the output stream in
-   * {@link #uncompress(InputStream, OutputStream)}.
-   * @return the size (default is 32768)
-   */
-  public int getOutputBufferSize() {
-    return outputBufferSize;
-  }
-
-  /**
-   * Sets the size of the buffer used for writing to the output stream in
-   * {@link #uncompress(InputStream, OutputStream)}.
-   * @param outputBufferSize the size to set (default is 32768)
-   */
-  public void setOutputBufferSize(int outputBufferSize) {
-    this.outputBufferSize = outputBufferSize;
-  }
-
-  /**
    * Sets whether or not to suppress wrapping the deflate output with the standard zlib header and
    * checksum fields. Defaults to false.
    * @param nowrap see {@link Inflater#Inflater(boolean)}
@@ -138,12 +114,13 @@ public class DeflateUncompressor implements Uncompressor {
   /**
    * Returns the {@link Inflater} to be used, creating a new one if necessary and caching it for
    * future use.
+   *
    * @return the inflater
    */
-  protected Inflater createOrResetInflater() {
-    Inflater result = inflater;
+  protected InflaterWrapper createOrResetInflater() {
+    InflaterWrapper result = inflater;
     if (result == null) {
-      result = new Inflater(nowrap);
+      result = new InflaterWrapper(nowrap);
       if (caching) {
         inflater = result;
       }
@@ -158,7 +135,7 @@ public class DeflateUncompressor implements Uncompressor {
    */
   public void release() {
     if (inflater != null) {
-      inflater.end();
+      inflater.endInternal();
       inflater = null;
     }
   }
@@ -168,11 +145,7 @@ public class DeflateUncompressor implements Uncompressor {
       throws IOException {
     InflaterInputStream inflaterIn =
         new InflaterInputStream(compressedIn, createOrResetInflater(), inputBufferSize);
-    byte[] buffer = new byte[outputBufferSize];
-    int numRead = 0;
-    while ((numRead = inflaterIn.read(buffer)) >= 0) {
-      uncompressedOut.write(buffer, 0, numRead);
-    }
+    copy(inflaterIn, uncompressedOut);
     if (!isCaching()) {
       release();
     }

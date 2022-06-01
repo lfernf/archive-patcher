@@ -14,6 +14,7 @@
 
 package com.google.archivepatcher.shared;
 
+import static com.google.archivepatcher.shared.TestUtils.assertThrows;
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.truth.Truth.assertWithMessage;
 
@@ -21,7 +22,6 @@ import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.RandomAccessFile;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -189,49 +189,30 @@ public class RandomAccessFileInputStreamTest {
     assertThat(stream.read()).isEqualTo(-1);
   }
 
-  @Test(expected = IllegalArgumentException.class)
+  @Test
   public void testSetRange_TooLong() throws IOException {
-    stream.setRange(0, testData.length + 1);
-  }
-
-  @Test(expected = IllegalArgumentException.class)
-  public void testSetRange_NegativeOffset() throws IOException {
-    stream.setRange(-1, testData.length);
-  }
-
-  @Test(expected = IllegalArgumentException.class)
-  public void testSetRange_NegativeLength() throws IOException {
-    stream.setRange(0, -1);
-  }
-
-  @Test(expected = IllegalArgumentException.class)
-  public void testSetRange_LongOverflow() throws IOException {
-    stream.setRange(Long.MAX_VALUE, 1); // Oh dear.
-  }
-
-  @Test(expected = IOException.class)
-  public void testReset_NoMarkSet() throws IOException {
-    stream.reset();
+    assertThrows(IllegalArgumentException.class, () -> stream.setRange(0, testData.length + 1));
   }
 
   @Test
-  public void testMark_IOExceptionInRaf() throws IOException {
-    stream =
-        new RandomAccessFileInputStream(
-            new RandomAccessFile(tempFile, "r") {
-              @Override
-              public long getFilePointer() throws IOException {
-                throw new IOException("Blah314159");
-              }
-            },
-            0,
-            testData.length);
-    try {
-      stream.mark(0);
-      assertWithMessage("Executed code that should have failed.").fail();
-    } catch (Exception e) {
-      assertThat(e).hasCauseThat().hasMessageThat().isEqualTo("Blah314159");
-    }
+  public void testSetRange_NegativeOffset() throws IOException {
+    assertThrows(IllegalArgumentException.class, () -> stream.setRange(-1, testData.length));
+  }
+
+  @Test
+  public void testSetRange_NegativeLength() throws IOException {
+    assertThrows(IllegalArgumentException.class, () -> stream.setRange(0, -1));
+  }
+
+  @Test
+  public void testSetRange_LongOverflow() throws IOException {
+    assertThrows(
+        IllegalArgumentException.class, () -> stream.setRange(Long.MAX_VALUE, 1)); // Oh dear.
+  }
+
+  @Test
+  public void testReset_NoMarkSet() throws IOException {
+    assertThrows(IOException.class, () -> stream.reset());
   }
 
   @Test
