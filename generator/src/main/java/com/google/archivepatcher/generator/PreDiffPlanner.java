@@ -15,6 +15,8 @@
 package com.google.archivepatcher.generator;
 
 import static com.google.archivepatcher.generator.DeltaFormatExplanation.DEFAULT;
+import static com.google.archivepatcher.generator.DeltaFormatExplanation.FILE_TYPE;
+import static com.google.archivepatcher.generator.DeltaFormatExplanation.UNCHANGED;
 import static com.google.archivepatcher.generator.UncompressionOptionExplanation.BOTH_ENTRIES_UNCOMPRESSED;
 import static com.google.archivepatcher.generator.UncompressionOptionExplanation.COMPRESSED_BYTES_CHANGED;
 import static com.google.archivepatcher.generator.UncompressionOptionExplanation.COMPRESSED_BYTES_IDENTICAL;
@@ -26,28 +28,40 @@ import static com.google.archivepatcher.generator.ZipEntryUncompressionOption.UN
 import static com.google.archivepatcher.generator.ZipEntryUncompressionOption.UNCOMPRESS_NEITHER;
 import static com.google.archivepatcher.generator.ZipEntryUncompressionOption.UNCOMPRESS_NEW;
 import static com.google.archivepatcher.generator.ZipEntryUncompressionOption.UNCOMPRESS_OLD;
+import static com.google.archivepatcher.shared.PatchConstants.CompressionMethod.DEFLATE;
+import static com.google.archivepatcher.shared.PatchConstants.CompressionMethod.STORED;
+import static com.google.archivepatcher.shared.PatchConstants.CompressionMethod.UNKNOWN;
 import static com.google.archivepatcher.shared.PatchConstants.DeltaFormat.BSDIFF;
+import static com.google.archivepatcher.shared.PatchConstants.DeltaFormat.FILE_BY_FILE;
 
 import com.google.archivepatcher.generator.similarity.Crc32SimilarityFinder;
 import com.google.archivepatcher.generator.similarity.SimilarityFinder;
+import com.google.archivepatcher.shared.DeflateUncompressor;
 import com.google.archivepatcher.shared.JreDeflateParameters;
 import com.google.archivepatcher.shared.PatchConstants.DeltaFormat;
+import com.google.archivepatcher.shared.Range;
 import com.google.archivepatcher.shared.TypedRange;
 import com.google.archivepatcher.shared.bytesource.ByteSource;
 import java.io.BufferedInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import javax.annotation.Nullable;
 
 /**
  * Plans archive transformations to be made prior to differencing.
  */
 class PreDiffPlanner {
+  private static final List<String> ARCHIVE_EXTENSIONS = Arrays.asList(".zip", ".apk", ".jar");
+
+  private static final DeltaFormat DEFAULT_DELTA_FORMAT = BSDIFF;
 
   /** The old archive. */
   private final ByteSource oldFile;
@@ -76,6 +90,21 @@ class PreDiffPlanner {
    */
   private final List<PreDiffPlanEntryModifier> preDiffPlanEntryModifiers;
 
+  private final Set<DeltaFormat> supportedDeltaFormats;
+
+  /**
+   * Creating a {@link DeflateUncompressor} (and in turn a {@link java.util.zip.Inflater}) is
+   * surprisingly expensive. Hence we kept an instance here so we do not create multiple copies.
+   *
+   * <p>This is used to uncompress embedded zip entries before trying to determine if it is a valid
+   * zip archive. Since we only allow one "level" of recursion, it will only be used in the instance
+   * of this class corresponding to the "outer" archive. Thus caching it here instead of globally is
+   * sufficient.
+   *
+   * @see DeflateUncompressor#setCaching(boolean)
+   */
+  @Nullable private DeflateUncompressor deflateUncompressorCache = null;
+
   /**
    * Constructs a new planner that will work on the specified inputs
    *
@@ -103,6 +132,7 @@ class PreDiffPlanner {
     this.newArchiveZipEntriesByPath = newArchiveZipEntriesByPath;
     this.newArchiveJreDeflateParametersByPath = newArchiveJreDeflateParametersByPath;
     this.preDiffPlanEntryModifiers = preDiffPlanEntryModifiers;
+    this.supportedDeltaFormats = supportedDeltaFormats;
   }
 
   /**
@@ -120,31 +150,35 @@ class PreDiffPlanner {
     }
 
     // Process entries to extract ranges for decompression & recompression
-    Set<TypedRange<Void>> oldFilePlan = new HashSet<>();
+    Set<Range> oldFilePlan = new HashSet<>();
     Set<TypedRange<JreDeflateParameters>> newFilePlan = new HashSet<>();
     for (PreDiffPlanEntry entry : defaultEntries) {
-      if (entry.getZipEntryUncompressionOption().uncompressOldEntry) {
-        long offset = entry.getOldEntry().getFileOffsetOfCompressedData();
-        long length = entry.getOldEntry().getCompressedSize();
-        TypedRange<Void> range = new TypedRange<Void>(offset, length, null);
-        oldFilePlan.add(range);
+      if (entry.zipEntryUncompressionOption().uncompressOldEntry) {
+        oldFilePlan.add(entry.oldEntry().compressedDataRange());
       }
-      if (entry.getZipEntryUncompressionOption().uncompressNewEntry) {
-        long offset = entry.getNewEntry().getFileOffsetOfCompressedData();
-        long length = entry.getNewEntry().getCompressedSize();
+      if (entry.zipEntryUncompressionOption().uncompressNewEntry) {
         JreDeflateParameters newJreDeflateParameters =
             newArchiveJreDeflateParametersByPath.get(
-                new ByteArrayHolder(entry.getNewEntry().getFileNameBytes()));
-        TypedRange<JreDeflateParameters> range =
-            new TypedRange<JreDeflateParameters>(offset, length, newJreDeflateParameters);
-        newFilePlan.add(range);
+                new ByteArrayHolder(entry.newEntry().fileNameBytes()));
+        newFilePlan.add(
+            entry.newEntry().compressedDataRange().withMetadata(newJreDeflateParameters));
       }
     }
 
-    List<TypedRange<Void>> oldFilePlanList = new ArrayList<>(oldFilePlan);
-    Collections.sort(oldFilePlanList);
+    List<Range> oldFilePlanList = new ArrayList<>(oldFilePlan);
+    Collections.sort(oldFilePlanList, Range.offsetComparator());
     List<TypedRange<JreDeflateParameters>> newFilePlanList = new ArrayList<>(newFilePlan);
-    Collections.sort(newFilePlanList);
+    Collections.sort(newFilePlanList, Range.offsetComparator());
+
+    // Since this class doesn't have a "close"-like method, we release the Inflater instance held
+    // inside deflateUncompressorCache here.
+    // This is a bit hacky since we implicitly uses the fact that generatePreDiffPlan will only be
+    // called once when diffing an archive.
+    if (deflateUncompressorCache != null) {
+      deflateUncompressorCache.release();
+      deflateUncompressorCache = null;
+    }
+
     return new PreDiffPlan(
         Collections.unmodifiableList(defaultEntries),
         Collections.unmodifiableList(oldFilePlanList),
@@ -210,11 +244,12 @@ class PreDiffPlanner {
   private PreDiffPlanEntry getPreDiffPlanEntry(MinimalZipEntry oldEntry, MinimalZipEntry newEntry)
       throws IOException {
 
-    PreDiffPlanEntry.Builder builder = PreDiffPlanEntry.builder().setZipEntries(oldEntry, newEntry);
+    PreDiffPlanEntry.Builder builder =
+        PreDiffPlanEntry.builder().oldEntry(oldEntry).newEntry(newEntry);
 
     setUncompressionOption(builder, oldEntry, newEntry);
 
-    setDeltaFormat(builder);
+    setDeltaFormat(builder, oldEntry, newEntry);
 
     return builder.build();
   }
@@ -230,31 +265,103 @@ class PreDiffPlanner {
     // 1. If either old and new are unsuitable for uncompression, we leave them untouched.
     // Reason singled out in order to monitor unsupported versions of zlib.
     if (unsuitableDeflate(newEntry)) {
-      builder.setUncompressionOption(UNCOMPRESS_NEITHER, DEFLATE_UNSUITABLE);
+      builder
+          .zipEntryUncompressionOption(UNCOMPRESS_NEITHER)
+          .uncompressionOptionExplanation(DEFLATE_UNSUITABLE);
     } else if (unsuitable(oldEntry, newEntry)) {
-      builder.setUncompressionOption(UNCOMPRESS_NEITHER, UNSUITABLE);
+      builder
+          .zipEntryUncompressionOption(UNCOMPRESS_NEITHER)
+          .uncompressionOptionExplanation(UNSUITABLE);
     }
 
     // 2. If both are uncompressed, we have nothing to do.
     else if (bothEntriesUncompressed(oldEntry, newEntry)) {
-      builder.setUncompressionOption(UNCOMPRESS_NEITHER, BOTH_ENTRIES_UNCOMPRESSED);
+      builder
+          .zipEntryUncompressionOption(UNCOMPRESS_NEITHER)
+          .uncompressionOptionExplanation(BOTH_ENTRIES_UNCOMPRESSED);
     }
 
     // 3. Now at least one is compressed. If there is change, we uncompress accordingly.
     else if (uncompressedChangedToCompressed(oldEntry, newEntry)) {
-      builder.setUncompressionOption(UNCOMPRESS_NEW, UNCOMPRESSED_CHANGED_TO_COMPRESSED);
+      builder
+          .zipEntryUncompressionOption(UNCOMPRESS_NEW)
+          .uncompressionOptionExplanation(UNCOMPRESSED_CHANGED_TO_COMPRESSED);
     } else if (compressedChangedToUncompressed(oldEntry, newEntry)) {
-      builder.setUncompressionOption(UNCOMPRESS_OLD, COMPRESSED_CHANGED_TO_UNCOMPRESSED);
+      builder
+          .zipEntryUncompressionOption(UNCOMPRESS_OLD)
+          .uncompressionOptionExplanation(COMPRESSED_CHANGED_TO_UNCOMPRESSED);
     } else if (compressedBytesIdentical(oldEntry, newEntry)) {
-      builder.setUncompressionOption(UNCOMPRESS_NEITHER, COMPRESSED_BYTES_IDENTICAL);
+      builder
+          .zipEntryUncompressionOption(UNCOMPRESS_NEITHER)
+          .uncompressionOptionExplanation(COMPRESSED_BYTES_IDENTICAL);
     } else {
       // Compressed bytes not identical.
-      builder.setUncompressionOption(UNCOMPRESS_BOTH, COMPRESSED_BYTES_CHANGED);
+      builder
+          .zipEntryUncompressionOption(UNCOMPRESS_BOTH)
+          .uncompressionOptionExplanation(COMPRESSED_BYTES_CHANGED);
     }
   }
 
-  private void setDeltaFormat(PreDiffPlanEntry.Builder builder) {
-    builder.setDeltaFormat(BSDIFF, DEFAULT);
+  private void setDeltaFormat(
+      PreDiffPlanEntry.Builder builder, MinimalZipEntry oldEntry, MinimalZipEntry newEntry) {
+    if (builder.uncompressionOptionExplanation() == UNSUITABLE) {
+      builder
+          .deltaFormat(DEFAULT_DELTA_FORMAT)
+          .deltaFormatExplanation(DeltaFormatExplanation.UNSUITABLE);
+    } else if (builder.uncompressionOptionExplanation() == DEFLATE_UNSUITABLE) {
+      builder
+          .deltaFormat(DEFAULT_DELTA_FORMAT)
+          .deltaFormatExplanation(DeltaFormatExplanation.DEFLATE_UNSUITABLE);
+    } else if (oldEntry.crc32OfUncompressedData() == newEntry.crc32OfUncompressedData()) {
+      // Note that here we are using CRC32 to detect if the bytes changed. If there is a collision,
+      // we will be using a less efficient delta algorithm (but still producing correct patch).
+      builder.deltaFormat(DEFAULT_DELTA_FORMAT).deltaFormatExplanation(UNCHANGED);
+    } else if (shouldApplyFileByFile(oldEntry, newEntry)) {
+      builder.deltaFormat(FILE_BY_FILE).deltaFormatExplanation(FILE_TYPE);
+    } else {
+      builder.deltaFormat(DEFAULT_DELTA_FORMAT).deltaFormatExplanation(DEFAULT);
+    }
+  }
+
+  private boolean shouldApplyFileByFile(MinimalZipEntry oldEntry, MinimalZipEntry newEntry) {
+    return supportedDeltaFormats.contains(FILE_BY_FILE)
+        && isArchive(oldEntry, oldFile)
+        && isArchive(newEntry, newFile);
+  }
+
+  private boolean isArchive(MinimalZipEntry entry, ByteSource byteSource) {
+    boolean hasArchiveExtension = false;
+    for (String extension : ARCHIVE_EXTENSIONS) {
+      if (entry.getFileName().endsWith(extension)) {
+        hasArchiveExtension = true;
+        break;
+      }
+    }
+
+    if (hasArchiveExtension) {
+      try (ByteSource embeddedArchive = byteSource.slice(entry.compressedDataRange())) {
+        // The archive entry itself might be DEFLATE compressed. So we need to uncompress it first.
+        ByteSource uncompressedSource;
+
+        // If the entry is compressed, we need to uncompress it before trying to look inside.
+        if (entry.compressionMethod() == DEFLATE) {
+          ByteArrayOutputStream outputStream =
+              new ByteArrayOutputStream((int) entry.uncompressedSize());
+          try (InputStream inputStream = embeddedArchive.openStream()) {
+            getDeflateUncompressor().uncompress(inputStream, outputStream);
+          }
+          uncompressedSource = ByteSource.wrap(outputStream.toByteArray());
+        } else {
+          uncompressedSource = embeddedArchive;
+        }
+
+        // If we can detect any zip entry, we treat it as a valid zip.
+        return !MinimalZipArchive.listEntries(uncompressedSource).isEmpty();
+      } catch (IOException e) {
+        return false;
+      }
+    }
+    return false;
   }
 
   /**
@@ -267,13 +374,9 @@ class PreDiffPlanner {
    * @return true if unsuitable
    */
   private boolean unsuitable(MinimalZipEntry oldEntry, MinimalZipEntry newEntry) {
-    if (oldEntry.getCompressionMethod() != 0 && !oldEntry.isDeflateCompressed()) {
+    if (oldEntry.compressionMethod() == UNKNOWN || newEntry.compressionMethod() == UNKNOWN) {
       // The old entry is compressed in a way that is not supported. It cannot be uncompressed, so
       // no uncompressed diff is possible; leave both old and new alone.
-      return true;
-    }
-    if (newEntry.getCompressionMethod() != 0 && !newEntry.isDeflateCompressed()) {
-      // The new entry is compressed in a way that is not supported. Same result as above.
       return true;
     }
     return false;
@@ -289,8 +392,8 @@ class PreDiffPlanner {
    */
   private boolean unsuitableDeflate(MinimalZipEntry newEntry) {
     JreDeflateParameters newJreDeflateParameters =
-        newArchiveJreDeflateParametersByPath.get(new ByteArrayHolder(newEntry.getFileNameBytes()));
-    if (newEntry.isDeflateCompressed() && newJreDeflateParameters == null) {
+        newArchiveJreDeflateParametersByPath.get(new ByteArrayHolder(newEntry.fileNameBytes()));
+    if (newEntry.compressionMethod() == DEFLATE && newJreDeflateParameters == null) {
       // The new entry is compressed via deflate, but the parameters were undivinable. Therefore the
       // new entry cannot be recompressed, so leave both old and new alone.
       return true;
@@ -308,7 +411,7 @@ class PreDiffPlanner {
    * @return as described
    */
   private boolean bothEntriesUncompressed(MinimalZipEntry oldEntry, MinimalZipEntry newEntry) {
-    return oldEntry.getCompressionMethod() == 0 && newEntry.getCompressionMethod() == 0;
+    return oldEntry.compressionMethod() == STORED && newEntry.compressionMethod() == STORED;
   }
 
   /**
@@ -321,7 +424,7 @@ class PreDiffPlanner {
    */
   private boolean uncompressedChangedToCompressed(
       MinimalZipEntry oldEntry, MinimalZipEntry newEntry) {
-    return oldEntry.getCompressionMethod() == 0 && newEntry.getCompressionMethod() != 0;
+    return oldEntry.compressionMethod() == STORED && newEntry.compressionMethod() != STORED;
   }
 
   /**
@@ -336,7 +439,7 @@ class PreDiffPlanner {
    */
   private boolean compressedChangedToUncompressed(
       MinimalZipEntry oldEntry, MinimalZipEntry newEntry) {
-    return newEntry.getCompressionMethod() == 0 && oldEntry.getCompressionMethod() != 0;
+    return newEntry.compressionMethod() == STORED && oldEntry.compressionMethod() != STORED;
   }
 
   /**
@@ -351,20 +454,20 @@ class PreDiffPlanner {
    */
   private boolean compressedBytesIdentical(MinimalZipEntry oldEntry, MinimalZipEntry newEntry)
       throws IOException {
-    if (oldEntry.getCompressedSize() != newEntry.getCompressedSize()) {
+    if (oldEntry.compressedDataRange().length() != newEntry.compressedDataRange().length()) {
       // Length is not the same, so content cannot match.
       return false;
     }
     try (InputStream oldFileInputStream =
-            oldFile.sliceFrom(oldEntry.getFileOffsetOfCompressedData()).openStream();
+            oldFile.slice(oldEntry.compressedDataRange()).openStream();
         BufferedInputStream oldFileBufferedInputStream =
             new BufferedInputStream(oldFileInputStream);
         InputStream newFileInputStream =
-            newFile.sliceFrom(newEntry.getFileOffsetOfCompressedData()).openStream();
+            newFile.slice(newEntry.compressedDataRange()).openStream();
         BufferedInputStream newFileBufferedInputStream =
             new BufferedInputStream(newFileInputStream)) {
 
-      for (int i = 0; i < oldEntry.getCompressedSize(); ++i) {
+      for (int i = 0; i < oldEntry.compressedDataRange().length(); i++) {
         if (oldFileBufferedInputStream.read() != newFileBufferedInputStream.read()) {
           return false;
         }
@@ -372,5 +475,13 @@ class PreDiffPlanner {
     }
 
     return true;
+  }
+
+  private DeflateUncompressor getDeflateUncompressor() {
+    if (deflateUncompressorCache == null) {
+      deflateUncompressorCache = new DeflateUncompressor();
+      deflateUncompressorCache.setCaching(true);
+    }
+    return deflateUncompressorCache;
   }
 }

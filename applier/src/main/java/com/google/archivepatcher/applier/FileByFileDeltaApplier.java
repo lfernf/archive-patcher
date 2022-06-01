@@ -16,14 +16,18 @@ package com.google.archivepatcher.applier;
 
 import com.google.archivepatcher.applier.bsdiff.BsDiffDeltaApplier;
 import com.google.archivepatcher.shared.DeltaFriendlyFile;
+import com.google.archivepatcher.shared.PatchConstants.DeltaFormat;
 import com.google.archivepatcher.shared.RandomAccessFileOutputStream;
+import com.google.archivepatcher.shared.Range;
+import com.google.archivepatcher.shared.SafeTempFiles;
+import com.google.archivepatcher.shared.bytesource.ByteSource;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 
 /** Applies patches. */
-public class FileByFileDeltaApplier implements DeltaApplier {
+public class FileByFileDeltaApplier extends DeltaApplier {
 
   /**
    * Default size of the buffer to use for copying bytes in the recompression stream.
@@ -58,14 +62,14 @@ public class FileByFileDeltaApplier implements DeltaApplier {
   }
 
   @Override
-  public void applyDelta(File oldBlob, InputStream deltaIn, OutputStream newBlobOut)
+  public void applyDelta(ByteSource oldBlob, InputStream deltaIn, OutputStream newBlobOut)
       throws IOException {
     if (!tempDir.exists()) {
       // Be nice, try to create the temp directory. Don't bother to check return value as the code
       // will fail when it tries to create the file in a few more lines anyways.
       tempDir.mkdirs();
     }
-    File tempFile = File.createTempFile("gfbfv1", "old", tempDir);
+    File tempFile = SafeTempFiles.createTempFile("gfbfv1", "old", tempDir);
     try {
       applyDeltaInternal(oldBlob, tempFile, deltaIn, newBlobOut);
     } finally {
@@ -75,6 +79,7 @@ public class FileByFileDeltaApplier implements DeltaApplier {
 
   /**
    * Does the work for applying a delta.
+   *
    * @param oldBlob the old blob
    * @param deltaFriendlyOldBlob the location in which to store the delta-friendly old blob
    * @param deltaIn the patch stream
@@ -82,30 +87,50 @@ public class FileByFileDeltaApplier implements DeltaApplier {
    * @throws IOException if anything goes wrong
    */
   private void applyDeltaInternal(
-      File oldBlob, File deltaFriendlyOldBlob, InputStream deltaIn, OutputStream newBlobOut)
+      ByteSource oldBlob, File deltaFriendlyOldBlob, InputStream deltaIn, OutputStream newBlobOut)
       throws IOException {
 
     // First, read the patch plan from the patch stream.
-    PatchReader patchReader = new PatchReader();
-    PatchApplyPlan plan = patchReader.readPatchApplyPlan(deltaIn);
+    PatchApplyPlan plan = PatchReader.readPatchApplyPlan(deltaIn);
     writeDeltaFriendlyOldBlob(plan, oldBlob, deltaFriendlyOldBlob);
-    // Apply the delta. In v1 there is always exactly one delta descriptor, it is bsdiff, and it
-    // takes up the rest of the patch stream - so there is no need to examine the list of
-    // DeltaDescriptors in the patch at all.
-    long deltaLength = plan.getDeltaDescriptors().get(0).getDeltaLength();
-    DeltaApplier deltaApplier = getDeltaApplier();
-    // Don't close this stream, as it is just a limiting wrapper.
-    @SuppressWarnings("resource")
-    LimitedInputStream limitedDeltaIn = new LimitedInputStream(deltaIn, deltaLength);
-    // Don't close this stream, as it would close the underlying OutputStream (that we don't own).
-    @SuppressWarnings("resource")
-    PartiallyCompressingOutputStream recompressingNewBlobOut =
-        new PartiallyCompressingOutputStream(
-            plan.getDeltaFriendlyNewFileRecompressionPlan(),
-            newBlobOut,
-            DEFAULT_COPY_BUFFER_SIZE);
-    deltaApplier.applyDelta(deltaFriendlyOldBlob, limitedDeltaIn, recompressingNewBlobOut);
-    recompressingNewBlobOut.flush();
+    try (ByteSource oldBlobByteSource = ByteSource.fromFile(deltaFriendlyOldBlob)) {
+      // Don't close this stream, as it would close the underlying OutputStream (that we don't own).
+      @SuppressWarnings("resource")
+      PartiallyCompressingOutputStream recompressingNewBlobOut =
+          new PartiallyCompressingOutputStream(
+              plan.getDeltaFriendlyNewFileRecompressionPlan(),
+              newBlobOut,
+              DEFAULT_COPY_BUFFER_SIZE);
+      // Apply the delta.
+      Range previousNewBlobRange = Range.of(0, 0);
+      for (int i = 0; i < plan.getNumberOfDeltas(); i++) {
+        DeltaDescriptor descriptor = PatchReader.readDeltaDescriptor(deltaIn);
+
+        // Validate that the delta-friendly new blob ranges are contiguous
+        // Note that the fact that we interleaved delta-descriptors with delta data means we might
+        // be doing wasted work if there is an error in later delta descriptors.
+        Range newBlobRange = descriptor.deltaFriendlyNewFileRange();
+        if (newBlobRange.offset() != previousNewBlobRange.endOffset()) {
+          throw new PatchFormatException(
+              String.format(
+                  "Gap in delta record. Previous delta-friendly new blob range: %s. Current"
+                      + " delta-friendly new blob range: %s",
+                  previousNewBlobRange, newBlobRange));
+        }
+        previousNewBlobRange = newBlobRange;
+
+        DeltaApplier deltaApplier = getDeltaApplier(descriptor.deltaFormat());
+        // Don't close this stream, as it is just a limiting wrapper.
+        @SuppressWarnings("resource")
+        LimitedInputStream limitedDeltaIn =
+            new LimitedInputStream(deltaIn, descriptor.deltaLength());
+        deltaApplier.applyDelta(
+            oldBlobByteSource.slice(descriptor.deltaFriendlyOldFileRange()),
+            limitedDeltaIn,
+            recompressingNewBlobOut);
+      }
+      recompressingNewBlobOut.flush();
+    }
   }
 
   /**
@@ -117,26 +142,27 @@ public class FileByFileDeltaApplier implements DeltaApplier {
    * @throws IOException if anything goes wrong
    */
   private void writeDeltaFriendlyOldBlob(
-      PatchApplyPlan plan, File oldBlob, File deltaFriendlyOldBlob) throws IOException {
+      PatchApplyPlan plan, ByteSource oldBlob, File deltaFriendlyOldBlob) throws IOException {
     try (RandomAccessFileOutputStream deltaFriendlyOldFileOut =
         new RandomAccessFileOutputStream(
             deltaFriendlyOldBlob, plan.getDeltaFriendlyOldFileSize())) {
       DeltaFriendlyFile.generateDeltaFriendlyFile(
-          plan.getOldFileUncompressionPlan(),
-          oldBlob,
-          deltaFriendlyOldFileOut,
-          false,
-          DEFAULT_COPY_BUFFER_SIZE);
+          plan.getOldFileUncompressionPlan(), oldBlob, deltaFriendlyOldFileOut);
     }
   }
 
   /**
    * Return an instance of a {@link DeltaApplier} suitable for applying the deltas within the patch
-   * stream.
-   * @return the applier
+   * stream for the {@link DeltaFormat} given.
    */
   // Visible for testing only
-  protected DeltaApplier getDeltaApplier() {
-    return new BsDiffDeltaApplier();
+  protected DeltaApplier getDeltaApplier(DeltaFormat deltaFormat) {
+    switch (deltaFormat) {
+      case BSDIFF:
+        return new BsDiffDeltaApplier();
+      case FILE_BY_FILE:
+        return new FileByFileDeltaApplier(tempDir);
+    }
+    throw new IllegalArgumentException("Unexpected delta format " + deltaFormat);
   }
 }

@@ -14,6 +14,7 @@
 
 package com.google.archivepatcher.shared.bytesource;
 
+import com.google.archivepatcher.shared.Range;
 import java.io.Closeable;
 import java.io.File;
 import java.io.IOException;
@@ -33,6 +34,12 @@ public abstract class ByteSource implements Closeable {
     length = Math.min(length, length());
     return new SlicedByteSource(this, offset, length);
   }
+
+  /** Same with {@link #slice(long, long)} but with a {@link Range} argument. */
+  public ByteSource slice(Range range) {
+    return slice(range.offset(), range.length());
+  }
+
   /** Returns a slice of this {@link ByteSource} starting at byte {@code offset}. */
   public ByteSource sliceFrom(long offset) throws IOException {
     long length = Math.max(length() - offset, 0);
@@ -44,6 +51,9 @@ public abstract class ByteSource implements Closeable {
     return openStream(0, length());
   }
 
+  /** Returns a {@link java.io.BufferedInputStream} for reading from this {@link ByteSource}. */
+  public abstract InputStream openBufferedStream() throws IOException;
+
   /**
    * Opens an {@link InputStream} starting at byte offset {@code offset} with length {@code length}
    * in this {@link ByteSource}.
@@ -52,10 +62,14 @@ public abstract class ByteSource implements Closeable {
 
   /** Convenience method to obtain a {@link ByteSource} from a {@link File}. */
   public static ByteSource fromFile(File file) throws IOException {
-    return new RandomAccessFileByteSource(file);
+    return MmapByteSource.create(file);
   }
 
-  /** Convenience method to obtain a {@link ByteSource} from a byte array. */
+  /**
+   * Convenience method to obtain a {@link ByteSource} from a byte array.
+   *
+   * <p>WARNING: the byte array passed in is not copied and should not be mutated afterwards.
+   */
   public static ByteSource wrap(byte[] buffer) {
     return new ByteArrayByteSource(buffer);
   }

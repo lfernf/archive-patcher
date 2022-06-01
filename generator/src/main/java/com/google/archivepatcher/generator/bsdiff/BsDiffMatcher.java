@@ -19,51 +19,51 @@ import java.io.IOException;
 import java.io.InputStream;
 
 /**
- * Implementation of matcher used by BsDiff. Exact matches between newData[a ... a + len - 1] and
- * oldData[b ... b + len - 1] are valid if:
+ * Implementation of matcher used by BsDiff. Exact matches between mNewData[a ... a + len - 1] and
+ * mOldData[b ... b + len - 1] are valid if:
  *
  * <ul>
- *   <li>|len| > minimumMatchLength
- *   <li>The number of matches between newData[a ... a + len - 1] and oldData[previous_b ...
- *       previous_b + len - 1] < |len| - minimumMatchLength where |previous_b| is the |b| value of
+ *   <li>|len| > mMinimumMatchLength
+ *   <li>The number of matches between mNewData[a ... a + len - 1] and mOldData[previous_b ...
+ *       previous_b + len - 1] < |len| - mMinimumMatchLength where |previous_b| is the |b| value of
  *       the previous match if there was one and zero otherwise.
  * </ul>
  */
 class BsDiffMatcher implements Matcher {
-  private final ByteSource oldData;
-  private final ByteSource newData;
+  private final ByteSource mOldData;
+  private final ByteSource mNewData;
 
   /**
-   * Contains order of the sorted suffixes of |oldData|. The element at groupArray[i] contains the
-   * position of oldData[i ... oldData.length - 1] in the sorted list of suffixes of |oldData|.
+   * Contains order of the sorted suffixes of |mOldData|. The element at mGroupArray[i] contains the
+   * position of mOldData[i ... mOldData.length - 1] in the sorted list of suffixes of |mOldData|.
    */
-  private final RandomAccessObject groupArray;
+  private final RandomAccessObject mGroupArray;
 
   /**
-   * The index in |oldData| of the first byte of the match. Zero if no matches have been found yet.
+   * The index in |mOldData| of the first byte of the match. Zero if no matches have been found yet.
    */
-  private int oldPos;
+  private int mOldPos;
 
   /**
-   * The index in |newData| of the first byte of the match. Zero if no matches have been found yet.
-   * The next match will be searched starting at |newPos| + |matchLen|.
+   * The index in |mNewData| of the first byte of the match. Zero if no matches have been found yet.
+   * The next match will be searched starting at |mNewPos| + |mMatchLen|.
    */
-  private int newPos;
+  private int mNewPos;
 
   /** Minimum match length in bytes. */
-  private final int minimumMatchLength;
+  private final int mMinimumMatchLength;
 
   /**
    * A limit on how many total match lengths encountered, to exit the match extension loop in next()
    * and prevent O(n^2) behavior.
    */
-  private final long totalMatchLenBudget = 1L << 26; // ~64 million.
+  private final long mTotalMatchLenBudget = 1L << 26;  // ~64 million.
 
   /**
-   * The number of bytes, |n|, which match between newData[newPos ... newPos + n] and oldData[oldPos
-   * ... oldPos + n].
+   * The number of bytes, |n|, which match between mNewData[mNewPos ... mNewPos + n] and
+   * mOldData[mOldPos ... mOldPos + n].
    */
-  private int matchLen;
+  private int mMatchLen;
 
   /**
    * Create a standard BsDiffMatcher.
@@ -71,7 +71,7 @@ class BsDiffMatcher implements Matcher {
    * @param oldData
    * @param newData
    * @param minimumMatchLength the minimum "match" (in bytes) for BsDiff to consider between the
-   *     oldData and newData. This can have a significant effect on both the generated patch size
+   *     mOldData and mNewData. This can have a significant effect on both the generated patch size
    *     and
    */
   BsDiffMatcher(
@@ -79,25 +79,25 @@ class BsDiffMatcher implements Matcher {
       ByteSource newData,
       RandomAccessObject groupArray,
       int minimumMatchLength) {
-    this.oldData = oldData;
-    this.newData = newData;
-    this.groupArray = groupArray;
-    this.oldPos = 0;
-    this.minimumMatchLength = minimumMatchLength;
+    this.mOldData = oldData;
+    this.mNewData = newData;
+    this.mGroupArray = groupArray;
+    this.mOldPos = 0;
+    this.mMinimumMatchLength = minimumMatchLength;
   }
 
   @Override
   public Matcher.NextMatch next() throws IOException, InterruptedException {
-    // The offset between between the indices in |oldData| and |newData|
+    // The offset between between the indices in |mOldData| and |mNewData|
     // of the previous match.
-    int previousOldOffset = oldPos - newPos;
+    int previousOldOffset = mOldPos - mNewPos;
 
     // Look for a new match starting from the end of the previous match.
-    newPos += matchLen;
+    mNewPos += mMatchLen;
 
     // The number of matching bytes in the forward extension of the previous match:
-    // oldData[newPos + previousOldOffset ... newPos + previousOldOffset + matchLen - 1]
-    // and newData[newPos ... newPos + matchLen - 1].
+    // mOldData[mNewPos + previousOldOffset ... mNewPos + previousOldOffset + mMatchLen - 1]
+    // and mNewData[mNewPos ... mNewPos + mMatchLen - 1].
     int numMatches = 0;
 
     // The size of the range for which |numMatches| has been computed.
@@ -106,23 +106,24 @@ class BsDiffMatcher implements Matcher {
     // Sum over all match lengths encountered, to exit loop if we take too long to compute.
     long totalMatchLen = 0;
 
-    while (newPos < newData.length()) {
+    while (mNewPos < mNewData.length()) {
       if (Thread.interrupted()) {
         throw new InterruptedException();
       }
       BsDiff.Match match =
-          BsDiff.searchForMatch(groupArray, oldData, newData, newPos, 0, (int) oldData.length());
-      oldPos = match.start;
-      matchLen = match.length;
-      totalMatchLen += matchLen;
+          BsDiff.searchForMatch(
+              mGroupArray, mOldData, mNewData, mNewPos, 0, (int) mOldData.length());
+      mOldPos = match.start;
+      mMatchLen = match.length;
+      totalMatchLen += mMatchLen;
 
       // Update |numMatches| for the new value of |matchLen|.
-      for (; matchesCacheSize < matchLen; ++matchesCacheSize) {
-        int oldIndex = newPos + previousOldOffset + matchesCacheSize;
-        int newIndex = newPos + matchesCacheSize;
-        if (oldIndex < oldData.length()) {
-          try (InputStream oldDataInputStream = oldData.sliceFrom(oldIndex).openStream();
-              InputStream newDataInputStream = newData.sliceFrom(newIndex).openStream()) {
+      for (; matchesCacheSize < mMatchLen; ++matchesCacheSize) {
+        int oldIndex = mNewPos + previousOldOffset + matchesCacheSize;
+        int newIndex = mNewPos + matchesCacheSize;
+        if (oldIndex < mOldData.length()) {
+          try (InputStream oldDataInputStream = mOldData.sliceFrom(oldIndex).openStream();
+              InputStream newDataInputStream = mNewData.sliceFrom(newIndex).openStream()) {
             if (oldDataInputStream.read() == newDataInputStream.read()) {
               ++numMatches;
             }
@@ -131,36 +132,36 @@ class BsDiffMatcher implements Matcher {
       }
 
       // Also return if we've been trying to extend a large match for a long time.
-      if (matchLen > numMatches + minimumMatchLength || totalMatchLen >= totalMatchLenBudget) {
-        return Matcher.NextMatch.of(true, oldPos, newPos);
+      if (mMatchLen > numMatches + mMinimumMatchLength || totalMatchLen >= mTotalMatchLenBudget) {
+        return Matcher.NextMatch.of(true, mOldPos, mNewPos);
       }
 
-      if (matchLen == 0) {
-        ++newPos;
-      } else if (matchLen == numMatches) {
+      if (mMatchLen == 0) {
+        ++mNewPos;
+      } else if (mMatchLen == numMatches) {
         // This seems to be an optimization because it is unlikely to find a valid match in the
-        // range newPos = [ newPos ... newPos + matchLen - 1 ] especially for large values of
-        // |matchLen|.
-        newPos += numMatches;
+        // range mNewPos = [ mNewPos ... mNewPos + mMatchLen - 1 ] especially for large values of
+        // |mMatchLen|.
+        mNewPos += numMatches;
         numMatches = 0;
         matchesCacheSize = 0;
       } else {
-        // Update |numMatches| for the value of |newPos| in the next iteration of the loop. In the
+        // Update |numMatches| for the value of |mNewPos| in the next iteration of the loop. In the
         // next iteration of the loop, the new value of |numMatches| will be at least
         // |numMatches - 1| because
-        // oldData[newPos + previousOldOffset + 1 ... newPos + previousOldOffset + matchLen - 1]
-        // matches newData[newPos + 1 ... newPos + matchLen - 1].
-        if (newPos + previousOldOffset < oldData.length()) {
+        // mOldData[mNewPos + previousOldOffset + 1 ... mNewPos + previousOldOffset + mMatchLen - 1]
+        // matches mNewData[mNewPos + 1 ... mNewPos + mMatchLen - 1].
+        if (mNewPos + previousOldOffset < mOldData.length()) {
 
           try (InputStream oldDataInputStream =
-                  oldData.sliceFrom(newPos + previousOldOffset).openStream();
-              InputStream newDataInputStream = newData.sliceFrom(newPos).openStream()) {
+                  mOldData.sliceFrom(mNewPos + previousOldOffset).openStream();
+              InputStream newDataInputStream = mNewData.sliceFrom(mNewPos).openStream()) {
             if (oldDataInputStream.read() == newDataInputStream.read()) {
               --numMatches;
             }
           }
         }
-        ++newPos;
+        ++mNewPos;
         --matchesCacheSize;
       }
     }

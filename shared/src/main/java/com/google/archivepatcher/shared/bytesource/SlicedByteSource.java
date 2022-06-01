@@ -14,11 +14,12 @@
 
 package com.google.archivepatcher.shared.bytesource;
 
+import java.io.BufferedInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 
 /** A {@link ByteSource} derived from a slice of another {@link ByteSource}. */
-class SlicedByteSource extends ByteSource {
+public class SlicedByteSource extends ByteSource {
 
   private final ByteSource byteSource;
   /**
@@ -55,6 +56,15 @@ class SlicedByteSource extends ByteSource {
     long newEndOfSlice = getValidOffset(newStartOfSlice + length);
 
     return new SlicedByteSource(byteSource, newStartOfSlice, newEndOfSlice - newStartOfSlice);
+  }
+
+  /**
+   * Opens a {@link BufferedInputStream} for this {@link ByteSource}. If {@link #byteSource} is of
+   * {@link ByteArrayByteSource} or {@link MmapByteSource} type then this is unnecessary.
+   */
+  @Override
+  public InputStream openBufferedStream() throws IOException {
+    return new BufferedInputStream(openStream(0, length()));
   }
 
   @Override

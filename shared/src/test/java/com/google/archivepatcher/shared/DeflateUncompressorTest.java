@@ -101,20 +101,11 @@ public class DeflateUncompressorTest {
   }
 
   @Test
-  public void testSetOutputBufferSize() throws IOException {
-    assertThat(uncompressor.getOutputBufferSize()).isNotEqualTo(17); // Ensure test is valid
-    uncompressor.setOutputBufferSize(17); // Arbitrary non-default value
-    assertThat(uncompressor.getOutputBufferSize()).isEqualTo(17);
-    uncompressor.uncompress(compressedContentIn, uncompressedContentOut);
-    assertThat(uncompressedContentOut.toByteArray()).isEqualTo(CONTENT);
-  }
-
-  @Test
   public void testCreateOrResetInflater_Uncached() {
     uncompressor.setCaching(false);
     Inflater inflater1 = uncompressor.createOrResetInflater();
     Inflater inflater2 = uncompressor.createOrResetInflater();
-    assertThat(inflater1).isNotSameAs(inflater2);
+    assertThat(inflater1).isNotSameInstanceAs(inflater2);
   }
 
   @Test
@@ -122,7 +113,7 @@ public class DeflateUncompressorTest {
     uncompressor.setCaching(true);
     Inflater inflater1 = uncompressor.createOrResetInflater();
     Inflater inflater2 = uncompressor.createOrResetInflater();
-    assertThat(inflater1).isSameAs(inflater2);
+    assertThat(inflater1).isSameInstanceAs(inflater2);
   }
 
   @Test
@@ -131,7 +122,7 @@ public class DeflateUncompressorTest {
     Inflater inflater1 = uncompressor.createOrResetInflater();
     uncompressor.release();
     Inflater inflater2 = uncompressor.createOrResetInflater();
-    assertThat(inflater1).isNotSameAs(inflater2);
+    assertThat(inflater1).isNotSameInstanceAs(inflater2);
   }
 
   @Test

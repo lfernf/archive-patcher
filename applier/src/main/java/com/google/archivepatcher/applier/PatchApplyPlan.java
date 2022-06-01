@@ -15,6 +15,7 @@
 package com.google.archivepatcher.applier;
 
 import com.google.archivepatcher.shared.JreDeflateParameters;
+import com.google.archivepatcher.shared.Range;
 import com.google.archivepatcher.shared.TypedRange;
 import java.util.List;
 
@@ -40,10 +41,8 @@ import java.util.List;
  * to read each delta in order and apply it.
  */
 public class PatchApplyPlan {
-  /**
-   * The plan for uncompressing the old file, in file order.
-   */
-  private final List<TypedRange<Void>> oldFileUncompressionPlan;
+  /** The plan for uncompressing the old file, in file order. */
+  private final List<Range> oldFileUncompressionPlan;
 
   /**
    * The plan for recompressing the delta-friendly new file, in file order.
@@ -56,43 +55,38 @@ public class PatchApplyPlan {
    */
   private final long deltaFriendlyOldFileSize;
 
-  /**
-   * The delta descriptors that describe how and what to do to the delta-friendly old file.
-   */
-  private final List<DeltaDescriptor> deltaDescriptors;
+  /** The number of delta records. */
+  private final int numberOfDeltas;
 
   /**
    * Constructs a new plan.
+   *
    * @param oldFileUncompressionPlan the plan for uncompressing the old file, in file order
    * @param deltaFriendlyOldFileSize the expected size of the delta-friendly old file, after
-   * executing the plan in oldFileUncompressionPlan; this can be used to pre-allocate the necessary
-   * space to hold the delta-friendly old file
+   *     executing the plan in oldFileUncompressionPlan; this can be used to pre-allocate the
+   *     necessary space to hold the delta-friendly old file
    * @param deltaFriendlyNewFileRecompressionPlan the plan for recompressing the delta-friendly new
-   * file, in file order
-   * @param deltaDescriptors the descriptors for the deltas in the patch stream
+   *     file, in file order
+   * @param numberOfDeltas the number of delta records
    */
   public PatchApplyPlan(
-      List<TypedRange<Void>> oldFileUncompressionPlan,
+      List<Range> oldFileUncompressionPlan,
       long deltaFriendlyOldFileSize,
       List<TypedRange<JreDeflateParameters>> deltaFriendlyNewFileRecompressionPlan,
-      List<DeltaDescriptor> deltaDescriptors) {
+      int numberOfDeltas) {
     this.oldFileUncompressionPlan = oldFileUncompressionPlan;
     this.deltaFriendlyOldFileSize = deltaFriendlyOldFileSize;
     this.deltaFriendlyNewFileRecompressionPlan = deltaFriendlyNewFileRecompressionPlan;
-    this.deltaDescriptors = deltaDescriptors;
+    this.numberOfDeltas = numberOfDeltas;
   }
 
-  /**
-   * Returns the old file uncompression plan.
-   * @return as described
-   */
-  public List<TypedRange<Void>> getOldFileUncompressionPlan() {
+  /** Returns the old file uncompression plan. */
+  public List<Range> getOldFileUncompressionPlan() {
     return oldFileUncompressionPlan;
   }
 
   /**
    * Returns the delta-friendly new file recompression plan.
-   * @return as described
    */
   public List<TypedRange<JreDeflateParameters>> getDeltaFriendlyNewFileRecompressionPlan() {
     return deltaFriendlyNewFileRecompressionPlan;
@@ -102,17 +96,13 @@ public class PatchApplyPlan {
    * Returns the expected size of the delta-friendly old file after executing the plan returned by
    * {@link #getOldFileUncompressionPlan()}. This can be used to pre-allocate the necessary space to
    * hold the delta-friendly old file.
-   * @return as described
    */
   public long getDeltaFriendlyOldFileSize() {
     return deltaFriendlyOldFileSize;
   }
 
-  /**
-   * Returns the delta descriptors that describe how and what to do to the delta-friendly old file.
-   * @return as described
-   */
-  public List<DeltaDescriptor> getDeltaDescriptors() {
-    return deltaDescriptors;
+  /** Returns the number of delta records. */
+  public int getNumberOfDeltas() {
+    return numberOfDeltas;
   }
 }

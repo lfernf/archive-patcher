@@ -15,7 +15,6 @@
 package com.google.archivepatcher.generator.bsdiff.wrapper;
 
 import com.google.archivepatcher.shared.bytesource.ByteSource;
-import com.google.archivepatcher.shared.bytesource.RandomAccessFileByteSource;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
@@ -54,29 +53,21 @@ public class BsDiffNativePatchWriter {
    */
   public static void generatePatch(ByteSource oldBlob, ByteSource newBlob, OutputStream deltaOut)
       throws IOException {
-    if (oldBlob instanceof RandomAccessFileByteSource
-        && newBlob instanceof RandomAccessFileByteSource) {
-      generatePatch(
-          ((RandomAccessFileByteSource) oldBlob).getFile(),
-          ((RandomAccessFileByteSource) newBlob).getFile(),
-          deltaOut);
-    } else {
-      byte[] oldData = new byte[(int) oldBlob.length()];
-      byte[] newData = new byte[(int) newBlob.length()];
-      try (InputStream in = oldBlob.openStream()) {
-        in.read(oldData);
-      }
-      try (InputStream in = newBlob.openStream()) {
-        in.read(newData);
-      }
-      byte[] patch = nativeGeneratePatchData(oldData, newData);
-
-      if (patch == null) {
-        throw new IllegalStateException("Unable to generate patch.");
-      }
-
-      deltaOut.write(patch);
+    byte[] oldData = new byte[(int) oldBlob.length()];
+    byte[] newData = new byte[(int) newBlob.length()];
+    try (InputStream in = oldBlob.openStream()) {
+      in.read(oldData);
     }
+    try (InputStream in = newBlob.openStream()) {
+      in.read(newData);
+    }
+    byte[] patch = nativeGeneratePatchData(oldData, newData);
+
+    if (patch == null) {
+      throw new IllegalStateException("Unable to generate patch.");
+    }
+
+    deltaOut.write(patch);
   }
 
   /**

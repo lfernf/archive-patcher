@@ -14,15 +14,18 @@
 
 package com.google.archivepatcher.generator;
 
+import static com.google.archivepatcher.shared.bytesource.ByteStreams.copy;
+
 import com.google.archivepatcher.shared.JreDeflateParameters;
 import com.google.archivepatcher.shared.PatchConstants;
+import com.google.archivepatcher.shared.Range;
 import com.google.archivepatcher.shared.TypedRange;
-import java.io.BufferedInputStream;
+import com.google.archivepatcher.shared.bytesource.ByteSource;
 import java.io.DataOutputStream;
-import java.io.File;
-import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.List;
 
 /**
  * Writes patches.
@@ -39,15 +42,15 @@ public class PatchWriter {
    */
   private final long deltaFriendlyOldFileSize;
 
-  /**
-   * The expected size of the delta-friendly new file, provided for forward compatibility.
-   */
-  private final long deltaFriendlyNewFileSize;
+  /** The delta that transforms the old delta-friendly file into the new delta-friendly file. */
+  private final List<DeltaEntry> deltaEntries;
 
-  /**
-   * The delta that transforms the old delta-friendly file into the new delta-friendly file.
-   */
-  private final File deltaFile;
+  /** The delta-friendly old blob. */
+  private final ByteSource oldBlob;
+  /** The delta-friendly new blob. */
+  private final ByteSource newBlob;
+  /** The factory used to obtain delta generators. */
+  private final DeltaGeneratorFactory deltaGeneratorFactory;
 
   /**
    * Creates a new patch writer.
@@ -56,20 +59,24 @@ public class PatchWriter {
    * @param deltaFriendlyOldFileSize the expected size of the delta-friendly old file, provided as a
    *     convenience for the patch <strong>applier</strong> to reserve space on the filesystem for
    *     applying the patch
-   * @param deltaFriendlyNewFileSize the expected size of the delta-friendly new file, provided for
-   *     forward compatibility
-   * @param deltaFile the delta that transforms the old delta-friendly file into the new
-   *     delta-friendly file
+   * @param deltaEntries the delta entries
+   * @param oldBlob
+   * @param newBlob
+   * @param deltaGeneratorFactory
    */
   public PatchWriter(
       PreDiffPlan plan,
       long deltaFriendlyOldFileSize,
-      long deltaFriendlyNewFileSize,
-      File deltaFile) {
+      List<DeltaEntry> deltaEntries,
+      ByteSource oldBlob,
+      ByteSource newBlob,
+      DeltaGeneratorFactory deltaGeneratorFactory) {
     this.plan = plan;
     this.deltaFriendlyOldFileSize = deltaFriendlyOldFileSize;
-    this.deltaFriendlyNewFileSize = deltaFriendlyNewFileSize;
-    this.deltaFile = deltaFile;
+    this.deltaEntries = deltaEntries;
+    this.oldBlob = oldBlob;
+    this.newBlob = newBlob;
+    this.deltaGeneratorFactory = deltaGeneratorFactory;
   }
 
   /**
@@ -78,7 +85,7 @@ public class PatchWriter {
    * @param out the stream to write the patch to
    * @throws IOException if anything goes wrong
    */
-  public void writePatch(OutputStream out) throws IOException {
+  public void writePatch(OutputStream out) throws IOException, InterruptedException {
     // Use DataOutputStream for ease of writing. This is deliberately left open, as closing it would
     // close the output stream that was passed in and that is not part of the method's documented
     // behavior.
@@ -91,16 +98,16 @@ public class PatchWriter {
 
     // Write out all the delta-friendly old file uncompression instructions
     dataOut.writeInt(plan.getOldFileUncompressionPlan().size());
-    for (TypedRange<Void> range : plan.getOldFileUncompressionPlan()) {
-      dataOut.writeLong(range.getOffset());
-      dataOut.writeLong(range.getLength());
+    for (Range range : plan.getOldFileUncompressionPlan()) {
+      dataOut.writeLong(range.offset());
+      dataOut.writeLong(range.length());
     }
 
     // Write out all the delta-friendly new file recompression instructions
     dataOut.writeInt(plan.getDeltaFriendlyNewFileRecompressionPlan().size());
     for (TypedRange<JreDeflateParameters> range : plan.getDeltaFriendlyNewFileRecompressionPlan()) {
-      dataOut.writeLong(range.getOffset());
-      dataOut.writeLong(range.getLength());
+      dataOut.writeLong(range.offset());
+      dataOut.writeLong(range.length());
       // Write the deflate information
       dataOut.write(PatchConstants.CompatibilityWindowId.DEFAULT_DEFLATE.patchValue);
       dataOut.write(range.getMetadata().level);
@@ -109,31 +116,54 @@ public class PatchWriter {
     }
 
     // Now the delta section
-    // First write the number of deltas present in the patch. In v1, there is always exactly one
-    // delta, and it is for the entire input; in future versions there may be multiple deltas, of
-    // arbitrary types.
-    dataOut.writeInt(1);
-    // In v1 the delta format is always bsdiff, so write it unconditionally.
-    dataOut.write(PatchConstants.DeltaFormat.BSDIFF.patchValue);
+    // First write the number of deltas present in the patch.
+    dataOut.writeInt(deltaEntries.size());
 
-    // Write the working ranges. In v1 these are always the entire contents of the delta-friendly
-    // old file and the delta-friendly new file. These are for forward compatibility with future
-    // versions that may allow deltas of arbitrary formats to be mapped to arbitrary ranges.
-    dataOut.writeLong(0); // i.e., start of the working range in the delta-friendly old file
-    dataOut.writeLong(deltaFriendlyOldFileSize); // i.e., length of the working range in old
-    dataOut.writeLong(0); // i.e., start of the working range in the delta-friendly new file
-    dataOut.writeLong(deltaFriendlyNewFileSize); // i.e., length of the working range in new
-
-    // Finally, the length of the delta and the delta itself.
-    dataOut.writeLong(deltaFile.length());
-    try (FileInputStream deltaFileIn = new FileInputStream(deltaFile);
-        BufferedInputStream deltaIn = new BufferedInputStream(deltaFileIn)) {
-      byte[] buffer = new byte[32768];
-      int numRead = 0;
-      while ((numRead = deltaIn.read(buffer)) >= 0) {
-        dataOut.write(buffer, 0, numRead);
-      }
+    for (DeltaEntry deltaEntry : deltaEntries) {
+      writeDeltaEntry(deltaEntry, oldBlob, newBlob, deltaGeneratorFactory, dataOut);
     }
     dataOut.flush();
   }
+
+  /** Writes the metadata and delta data associated with this entry into the output stream. */
+  void writeDeltaEntry(
+      DeltaEntry deltaEntry,
+      ByteSource oldBlob,
+      ByteSource newBlob,
+      DeltaGeneratorFactory deltaGeneratorFactory,
+      DataOutputStream outputStream)
+      throws IOException, InterruptedException {
+    outputStream.write(deltaEntry.deltaFormat().patchValue);
+
+    // Write the working ranges.
+    outputStream.writeLong(
+        deltaEntry
+            .oldBlobRange()
+            .offset()); // i.e., start of the working range in the delta-friendly old file
+    outputStream.writeLong(
+        deltaEntry.oldBlobRange().length()); // i.e., length of the working range in old
+    outputStream.writeLong(
+        deltaEntry
+            .newBlobRange()
+            .offset()); // i.e., start of the working range in the delta-friendly new file
+    outputStream.writeLong(
+        deltaEntry.newBlobRange().length()); // i.e., length of the working range in new
+
+    try (ByteSource inputBlobRange = oldBlob.slice(deltaEntry.oldBlobRange());
+        ByteSource destBlobRange = newBlob.slice(deltaEntry.newBlobRange());
+        TempBlob deltaFile = new TempBlob()) {
+      try (OutputStream bufferedDeltaOut = deltaFile.openBufferedStream()) {
+        DeltaGenerator deltaGenerator = deltaGeneratorFactory.create(deltaEntry.deltaFormat());
+        deltaGenerator.generateDelta(inputBlobRange, destBlobRange, bufferedDeltaOut);
+      }
+
+      // Finally, the length of the delta and the delta itself.
+      outputStream.writeLong(deltaFile.length());
+      try (ByteSource deltaSource = deltaFile.asByteSource();
+          InputStream deltaIn = deltaSource.openStream()) {
+        copy(deltaIn, outputStream);
+      }
+    }
+  }
 }
+

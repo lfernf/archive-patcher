@@ -19,26 +19,41 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
+import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel.MapMode;
 
-/** A {@link ByteSource} backed by a memory mapped file. */
-public class MmapByteSource extends ByteSource {
-  private final RandomAccessFile raf;
-  private ByteBuffer byteBuffer;
+/**
+ * A {@link ByteSource} backed by a memory mapped file.
+ *
+ * <p>WARNING: this class was not stress tested and should be used with caution, especially on
+ * Android devices. For more context, see the doc for {@link #close()}.
+ */
+public class MmapByteSource extends FileByteSource {
+  private MappedByteBuffer byteBuffer;
 
-  public MmapByteSource(File file) throws IOException {
-    this.raf = new RandomAccessFile(file, "r");
-    long length = file.length();
-    if (length > Integer.MAX_VALUE) {
+  MmapByteSource(File file) throws IOException {
+    super(file);
+    if (length() > Integer.MAX_VALUE) {
       throw new IllegalArgumentException(
-          "RandomAccessMmapObject only supports file sizes up to " + "Integer.MAX_VALUE.");
+          "MappedByteSource only supports file sizes up to " + "Integer.MAX_VALUE.");
     }
-    this.byteBuffer = raf.getChannel().map(MapMode.READ_ONLY, 0, (int) length);
+
+    try (RandomAccessFile raf = new RandomAccessFile(file, "r")) {
+      this.byteBuffer = raf.getChannel().map(MapMode.READ_ONLY, 0, length());
+    }
+  }
+
+  public static ByteSource create(File file) throws IOException {
+    if (file.length() <= Integer.MAX_VALUE) {
+      return new MmapByteSource(file);
+    } else {
+      return new RandomAccessFileByteSource(file);
+    }
   }
 
   @Override
-  public long length() {
-    return byteBuffer.capacity();
+  public InputStream openBufferedStream() throws IOException {
+    return openStream(0, length());
   }
 
   /**
@@ -53,21 +68,33 @@ public class MmapByteSource extends ByteSource {
     return new ByteBufferInputStream(byteBuffer, (int) offset, (int) length);
   }
 
+  /**
+   * Closes the {@link ByteSource} and release any resource.
+   */
   @Override
   public void close() throws IOException {
-    raf.close();
+    if (MappedByteBufferUtils.canFreeMappedBuffers()) {
+      try {
+        MappedByteBufferUtils.freeBuffer(byteBuffer);
+        return;
+      } catch (ReflectiveOperationException e) {
+        // fall through to the default way for closing buffers.
+      }
+    }
 
     // There is a long-standing bug with memory mapped objects in Java that requires the JVM to
     // finalize the MappedByteBuffer reference before the unmap operation is performed. This leaks
     // file handles and fills the virtual address space. Worse, on some systems (Windows for one)
-    // the active mmap prevents the temp file from being deleted - even if File.deleteOnExit() is
-    // used. The only safe way to ensure that file handles and actual files are not leaked by this
-    // class is to force an explicit full gc after explicitly nulling the MappedByteBuffer
-    // reference. This has to be done before attempting file deletion.
+    // the
+    // active mmap prevents the temp file from being deleted - even if File.deleteOnExit() is used.
+    // The only safe way to ensure that file handles and actual files are not leaked by this class
+    // is
+    // to force an explicit full gc after explicitly nulling the MappedByteBuffer reference. This
+    // has
+    // to be done before attempting file deletion.
     //
-    // See https://github.com/andrewhayden/archive-patcher/issues/5 for more information.
-    // Also http://bugs.java.com/view_bug.do?bug_id=6417205.
-
+    // See https://github.com/google/archive-patcher/issues/5 for more information. Also
+    // http://bugs.java.com/view_bug.do?bug_id=6417205.
     byteBuffer = null;
     System.gc();
     System.runFinalization();
@@ -134,7 +161,7 @@ public class MmapByteSource extends ByteSource {
         nextReadPos = readLimit;
         return remaining;
       } else {
-        nextReadPos += (int)n;
+        nextReadPos += (int) n;
         return n;
       }
     }
